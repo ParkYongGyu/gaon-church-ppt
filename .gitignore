@@ -1,0 +1,25 @@
+# 생성된 주일 슬라이드 (필요시 git LFS로 별도 관리 권장)
+output/*.pptx
+
+# 임시 작업 디렉토리
+*.tmp/
+work/
+unpacked/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code 로컬 설정 (필요시 주석 해제)
+# .claude/sessions/
+# .claude/local/
