@@ -41,7 +41,7 @@ DRIVE_FOLDER_NAME = "가온교회 주일예배"
 DRIVE_FOLDER_ID = os.environ.get(
     "GAON_DRIVE_FOLDER_ID", "1UpMqB6gIFZqBmxGfQRQBJSibAmUn0FlV"
 )
-RECIPIENT = os.environ.get("GAON_EMAIL_RECIPIENT", "gikimiad@gmail.com")
+DEFAULT_RECIPIENT = "gikimiad@gmail.com"
 PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -148,12 +148,28 @@ def upload_to_drive(service, file_path: Path) -> str:
     return file["webViewLink"]
 
 
-def send_email(link: str, filename: str):
+def parse_recipients_from_input() -> list[str]:
+    input_path = PROJECT_ROOT / "input" / "next_sunday.txt"
+    if not input_path.exists():
+        return [DEFAULT_RECIPIENT]
+    for line in input_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("수신자") and ":" in line:
+            raw = line.split(":", 1)[1].strip()
+            if raw:
+                return [r.strip() for r in raw.split(",") if r.strip()]
+    return [DEFAULT_RECIPIENT]
+
+
+def send_email(link: str, filename: str, recipients: list[str] | None = None):
+    if not recipients:
+        recipients = [DEFAULT_RECIPIENT]
+
     sender = os.environ.get("GMAIL_SENDER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")
 
     if not sender or not password:
         print(f"  링크: {link}")
+        print(f"  수신자: {', '.join(recipients)}")
         print(
             "  (이메일 전송을 위해 GMAIL_SENDER, GMAIL_APP_PASSWORD를 설정하세요)"
         )
@@ -167,11 +183,11 @@ def send_email(link: str, filename: str):
     msg = MIMEText(body)
     msg["Subject"] = f"가온교회 주일예배 슬라이드 - {filename}"
     msg["From"] = sender
-    msg["To"] = RECIPIENT
+    msg["To"] = ", ".join(recipients)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, password)
-        server.sendmail(sender, [RECIPIENT], msg.as_string())
+        server.sendmail(sender, recipients, msg.as_string())
 
     return True
 
@@ -189,8 +205,9 @@ def main():
     link = upload_to_drive(service, file_path)
     print(f"업로드 완료: {link}")
 
-    if send_email(link, file_path.name):
-        print(f"이메일 전송 완료: {RECIPIENT}")
+    recipients = parse_recipients_from_input()
+    if send_email(link, file_path.name, recipients):
+        print(f"이메일 전송 완료: {', '.join(recipients)}")
 
     # Routine이 읽을 수 있도록 링크를 stdout에 출력
     print(f"DRIVE_LINK={link}")
