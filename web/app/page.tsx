@@ -99,8 +99,15 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "저장 실패");
+        const text = await res.text();
+        let msg = "저장 실패";
+        try {
+          const data = JSON.parse(text);
+          msg = data.error || msg;
+        } catch {
+          msg = text.slice(0, 100) || msg;
+        }
+        throw new Error(msg);
       }
 
       router.push("/success");

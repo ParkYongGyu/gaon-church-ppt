@@ -29,9 +29,19 @@ function sermonKey(date: string): string {
   return `gaon:sermon:${date}`;
 }
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json(
+        { error: "요청 데이터를 읽을 수 없습니다 (파일이 너무 클 수 있음)" },
+        { status: 400 }
+      );
+    }
 
     const {
       date,
