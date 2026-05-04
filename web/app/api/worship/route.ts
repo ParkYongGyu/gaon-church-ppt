@@ -21,7 +21,12 @@ interface WorshipData {
   scriptureRef: string;
   scriptureBody: string;
   recipients: string;
+  sermonPptxName: string;
   updatedAt: string;
+}
+
+function sermonKey(date: string): string {
+  return `gaon:sermon:${date}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -36,6 +41,8 @@ export async function POST(req: NextRequest) {
       scriptureRef,
       scriptureBody,
       recipients,
+      sermonPptxBase64,
+      sermonPptxName,
     } = body;
 
     if (!date || !prayer || !sermonTitle || !scriptureRef || !scriptureBody) {
@@ -53,13 +60,20 @@ export async function POST(req: NextRequest) {
       scriptureRef,
       scriptureBody,
       recipients: recipients || "",
+      sermonPptxName: sermonPptxName || "",
       updatedAt: new Date().toISOString(),
     };
 
-    await Promise.all([
+    const saves: Promise<unknown>[] = [
       redis.set(LATEST_KEY, data),
       redis.set(dateKey(date), data),
-    ]);
+    ];
+
+    if (sermonPptxBase64) {
+      saves.push(redis.set(sermonKey(date), sermonPptxBase64));
+    }
+
+    await Promise.all(saves);
 
     return NextResponse.json({ ok: true });
   } catch {
@@ -71,11 +85,27 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date");
 
   if (date) {
+    const format = req.nextUrl.searchParams.get("format");
+
+    if (format === "sermon-pptx") {
+      const b64 = await redis.get<string>(sermonKey(date));
+      if (!b64) {
+        return NextResponse.json(null);
+      }
+      const binary = Buffer.from(b64, "base64");
+      return new NextResponse(binary, {
+        headers: {
+          "Content-Type":
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          "Content-Disposition": `attachment; filename="sermon.pptx"`,
+        },
+      });
+    }
+
     const data = await redis.get<WorshipData>(dateKey(date));
     if (!data) {
       return NextResponse.json(null);
     }
-    const format = req.nextUrl.searchParams.get("format");
     if (format === "txt") {
       const lines = [
         `날짜 : ${data.date}`,

@@ -132,6 +132,11 @@ def main():
             if not sermon_pptx.exists():
                 sys.exit(f"설교 PPT 파일이 없습니다: {sermon_pptx}")
 
+    if not sermon_pptx:
+        auto_sermon = PROJECT_ROOT / "input" / "sermon.pptx"
+        if auto_sermon.exists():
+            sermon_pptx = auto_sermon
+
     data = parse_input(input_path)
     date_str = data.get("날짜", "")
     prayer = data.get("대표기도", "")

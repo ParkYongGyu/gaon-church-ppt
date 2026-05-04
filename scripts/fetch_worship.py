@@ -63,6 +63,20 @@ def main():
     OUTPUT_PATH.write_text(body, encoding="utf-8")
     print(f"저장 완료 ({target_date}): {OUTPUT_PATH}")
 
+    sermon_url = f"{api_url}/api/worship?date={target_date}&format=sermon-pptx"
+    sermon_path = PROJECT_ROOT / "input" / "sermon.pptx"
+    try:
+        sermon_req = urllib.request.Request(sermon_url, headers=headers)
+        with urllib.request.urlopen(sermon_req) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            if "presentation" in ct:
+                sermon_path.write_bytes(resp.read())
+                print(f"설교 PPT 저장: {sermon_path}")
+            else:
+                sermon_path.unlink(missing_ok=True)
+    except Exception:
+        sermon_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     main()

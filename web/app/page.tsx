@@ -31,6 +31,8 @@ export default function Home() {
   const [scriptureRef, setScriptureRef] = useState("");
   const [scriptureBody, setScriptureBody] = useState("");
   const [recipients, setRecipients] = useState("gikimiad@gmail.com");
+  const [sermonFile, setSermonFile] = useState<File | null>(null);
+  const [sermonFileName, setSermonFileName] = useState("");
 
   const loadByDate = useCallback(async (d: string) => {
     if (!d.match(/^\d{4}-\d{1,2}-\d{1,2}$/)) return;
@@ -48,6 +50,7 @@ export default function Home() {
       setScriptureRef(data.scriptureRef || "");
       setScriptureBody(data.scriptureBody || "");
       setRecipients(data.recipients || "gikimiad@gmail.com");
+      setSermonFileName(data.sermonPptxName || "");
     } catch {
       /* 무시 */
     } finally {
@@ -69,6 +72,16 @@ export default function Home() {
     setError("");
 
     try {
+      let sermonPptxBase64 = "";
+      let sermonPptxName = "";
+      if (sermonFile) {
+        const buf = await sermonFile.arrayBuffer();
+        sermonPptxBase64 = btoa(
+          new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), "")
+        );
+        sermonPptxName = sermonFile.name;
+      }
+
       const res = await fetch("/api/worship", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -80,6 +93,8 @@ export default function Home() {
           scriptureRef,
           scriptureBody,
           recipients,
+          sermonPptxBase64,
+          sermonPptxName,
         }),
       });
 
@@ -199,6 +214,27 @@ export default function Home() {
           />
           <p className="mt-1 text-xs text-stone-400">
             콤마(,)로 구분하여 여러 명에게 발송 가능
+          </p>
+        </Field>
+
+        <Field label="추가 설교 PPT (선택)">
+          <input
+            type="file"
+            accept=".pptx"
+            onChange={(e) => {
+              const f = e.target.files?.[0] || null;
+              setSermonFile(f);
+              if (f) setSermonFileName(f.name);
+            }}
+            className={inputClass}
+          />
+          {sermonFileName && !sermonFile && (
+            <p className="mt-1 text-xs text-stone-500">
+              기존 업로드: {sermonFileName}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-stone-400">
+            이철준 원로목사 등 별도 설교 슬라이드가 있을 때 업로드
           </p>
         </Field>
 
