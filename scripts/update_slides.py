@@ -552,6 +552,409 @@ def _verify_slide12_encoding(work_dir: Path, pages):
         print("인코딩 검증 통과")
 
 
+# --- 설교 슬라이드 삽입 (이철준 원로목사 등) ------------------------------------
+
+LAYOUT_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
+
+# 설교 슬라이드 디자인 상수
+SERMON_BG_COLOR = "FFF8F0"
+SERMON_ACCENT_COLOR = "C8956C"
+SERMON_TITLE_COLOR = "3D2B1F"
+SERMON_BODY_COLOR = "333333"
+SERMON_SLIDE_W = 9144000
+SERMON_SLIDE_H = 5143500
+
+
+def extract_sermon_text(sermon_pptx_path: Path):
+    """설교 PPTX에서 각 슬라이드의 제목과 본문 텍스트를 추출."""
+    import tempfile as _tf
+
+    slides = []
+    with _tf.TemporaryDirectory() as tmp:
+        with zipfile.ZipFile(sermon_pptx_path, "r") as z:
+            z.extractall(tmp)
+
+        slides_dir = Path(tmp) / "ppt" / "slides"
+        i = 1
+        while True:
+            spath = slides_dir / f"slide{i}.xml"
+            if not spath.exists():
+                break
+            tree = etree.parse(str(spath))
+            root = tree.getroot()
+            title = ""
+            body_paragraphs = []
+
+            for sp in root.iter(f"{{{P}}}sp"):
+                nvSpPr = sp.find(f"{{{P}}}nvSpPr")
+                if nvSpPr is None:
+                    continue
+                nvPr = nvSpPr.find(f"{{{P}}}nvPr")
+                if nvPr is None:
+                    continue
+                ph = nvPr.find(f"{{{P}}}ph")
+                if ph is None:
+                    continue
+
+                ph_type = ph.get("type", "")
+                ph_idx = ph.get("idx", "")
+                txBody = sp.find(f"{{{P}}}txBody")
+                if txBody is None:
+                    continue
+
+                if ph_type == "title":
+                    texts = []
+                    for p in txBody.findall(f"{{{A}}}p"):
+                        for r in p.findall(f"{{{A}}}r"):
+                            t = r.find(f"{{{A}}}t")
+                            if t is not None and t.text:
+                                texts.append(t.text)
+                    title = "".join(texts).strip()
+                elif ph_idx == "1" or ph_type == "body":
+                    for p in txBody.findall(f"{{{A}}}p"):
+                        ptexts = []
+                        for r in p.findall(f"{{{A}}}r"):
+                            t = r.find(f"{{{A}}}t")
+                            if t is not None and t.text:
+                                ptexts.append(t.text)
+                        body_paragraphs.append("".join(ptexts))
+
+            slides.append({"title": title, "body": body_paragraphs})
+            i += 1
+
+    return slides
+
+
+def _sermon_make_run(text: str, is_ko: bool, sz: str, color: str, bold: bool = False):
+    """설교 슬라이드용 텍스트 run 생성."""
+    r = etree.Element(f"{{{A}}}r")
+    rpr = etree.SubElement(r, f"{{{A}}}rPr")
+    rpr.set("lang", "ko-KR" if is_ko else "en-US")
+    rpr.set("altLang", "en-US" if is_ko else "ko-KR")
+    rpr.set("sz", sz)
+    rpr.set("dirty", "0")
+    if bold:
+        rpr.set("b", "1")
+    fill = etree.SubElement(rpr, f"{{{A}}}solidFill")
+    etree.SubElement(fill, f"{{{A}}}srgbClr").set("val", color)
+    latin = etree.SubElement(rpr, f"{{{A}}}latin")
+    latin.set("typeface", "맑은 고딕")
+    ea = etree.SubElement(rpr, f"{{{A}}}ea")
+    ea.set("typeface", "맑은 고딕")
+    t = etree.SubElement(r, f"{{{A}}}t")
+    if " " in text:
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    t.text = text
+    return r
+
+
+def _create_sermon_slide_xml(title: str, body_paragraphs: list):
+    """환한 배경의 설교 슬라이드 XML 생성."""
+    NSMAP = {
+        "a": A,
+        "r": R,
+        "p": P,
+    }
+
+    sld = etree.Element(f"{{{P}}}sld", nsmap=NSMAP)
+    cSld = etree.SubElement(sld, f"{{{P}}}cSld")
+
+    # 배경: 따뜻한 아이보리
+    bg = etree.SubElement(cSld, f"{{{P}}}bg")
+    bgPr = etree.SubElement(bg, f"{{{P}}}bgPr")
+    grad = etree.SubElement(bgPr, f"{{{A}}}gradFill")
+    gsLst = etree.SubElement(grad, f"{{{A}}}gsLst")
+    gs1 = etree.SubElement(gsLst, f"{{{A}}}gs")
+    gs1.set("pos", "0")
+    etree.SubElement(gs1, f"{{{A}}}srgbClr").set("val", "FFFCF7")
+    gs2 = etree.SubElement(gsLst, f"{{{A}}}gs")
+    gs2.set("pos", "100000")
+    etree.SubElement(gs2, f"{{{A}}}srgbClr").set("val", "F5EDE0")
+    lin = etree.SubElement(grad, f"{{{A}}}lin")
+    lin.set("ang", "5400000")
+    lin.set("scaled", "1")
+    etree.SubElement(bgPr, f"{{{A}}}effectLst")
+
+    # Shape tree
+    spTree = etree.SubElement(cSld, f"{{{P}}}spTree")
+    nvGrpSpPr = etree.SubElement(spTree, f"{{{P}}}nvGrpSpPr")
+    etree.SubElement(nvGrpSpPr, f"{{{P}}}cNvPr").set("id", "1")
+    nvGrpSpPr[0].set("name", "")
+    etree.SubElement(nvGrpSpPr, f"{{{P}}}cNvGrpSpPr")
+    etree.SubElement(nvGrpSpPr, f"{{{P}}}nvPr")
+    grpSpPr = etree.SubElement(spTree, f"{{{P}}}grpSpPr")
+
+    # 상단 장식 바
+    _add_rect(spTree, shape_id=2, name="AccentBar",
+              x=0, y=0, w=SERMON_SLIDE_W, h=57150,
+              fill_color=SERMON_ACCENT_COLOR)
+
+    # 하단 장식 라인
+    _add_rect(spTree, shape_id=3, name="BottomLine",
+              x=0, y=SERMON_SLIDE_H - 38100, w=SERMON_SLIDE_W, h=38100,
+              fill_color=SERMON_ACCENT_COLOR)
+
+    # 제목 영역 (콤팩트)
+    title_y = 114300
+    title_h = 533400
+    _add_text_box(spTree, shape_id=4, name="Title",
+                  x=457200, y=title_y, w=8229600, h=title_h,
+                  text=title, font_size="2400", color=SERMON_TITLE_COLOR,
+                  bold=True, anchor="b")
+
+    # 구분선
+    divider_y = title_y + title_h + 57150
+    _add_rect(spTree, shape_id=5, name="Divider",
+              x=457200, y=divider_y, w=1828800, h=25400,
+              fill_color=SERMON_ACCENT_COLOR)
+
+    # 본문 영역 (최대한 넓게)
+    body_y = divider_y + 76200
+    body_h = SERMON_SLIDE_H - body_y - 114300
+    _add_body_text_box(spTree, shape_id=6, name="Body",
+                       x=457200, y=body_y, w=8229600, h=body_h,
+                       paragraphs=body_paragraphs,
+                       font_size="1600", color=SERMON_BODY_COLOR)
+
+    return sld
+
+
+def _add_rect(spTree, shape_id: int, name: str,
+              x: int, y: int, w: int, h: int, fill_color: str):
+    """단색 사각형 도형 추가."""
+    sp = etree.SubElement(spTree, f"{{{P}}}sp")
+    nvSpPr = etree.SubElement(sp, f"{{{P}}}nvSpPr")
+    cNvPr = etree.SubElement(nvSpPr, f"{{{P}}}cNvPr")
+    cNvPr.set("id", str(shape_id))
+    cNvPr.set("name", name)
+    etree.SubElement(nvSpPr, f"{{{P}}}cNvSpPr")
+    etree.SubElement(nvSpPr, f"{{{P}}}nvPr")
+    spPr = etree.SubElement(sp, f"{{{P}}}spPr")
+    xfrm = etree.SubElement(spPr, f"{{{A}}}xfrm")
+    off = etree.SubElement(xfrm, f"{{{A}}}off")
+    off.set("x", str(x))
+    off.set("y", str(y))
+    ext = etree.SubElement(xfrm, f"{{{A}}}ext")
+    ext.set("cx", str(w))
+    ext.set("cy", str(h))
+    prstGeom = etree.SubElement(spPr, f"{{{A}}}prstGeom")
+    prstGeom.set("prst", "rect")
+    etree.SubElement(prstGeom, f"{{{A}}}avLst")
+    solidFill = etree.SubElement(spPr, f"{{{A}}}solidFill")
+    etree.SubElement(solidFill, f"{{{A}}}srgbClr").set("val", fill_color)
+    ln = etree.SubElement(spPr, f"{{{A}}}ln")
+    etree.SubElement(ln, f"{{{A}}}noFill")
+
+
+def _add_text_box(spTree, shape_id: int, name: str,
+                  x: int, y: int, w: int, h: int,
+                  text: str, font_size: str, color: str,
+                  bold: bool = False, anchor: str = "t"):
+    """단일 텍스트 박스 도형 추가."""
+    sp = etree.SubElement(spTree, f"{{{P}}}sp")
+    nvSpPr = etree.SubElement(sp, f"{{{P}}}nvSpPr")
+    cNvPr = etree.SubElement(nvSpPr, f"{{{P}}}cNvPr")
+    cNvPr.set("id", str(shape_id))
+    cNvPr.set("name", name)
+    cNvSpPr = etree.SubElement(nvSpPr, f"{{{P}}}cNvSpPr")
+    cNvSpPr.set("txBox", "1")
+    etree.SubElement(nvSpPr, f"{{{P}}}nvPr")
+    spPr = etree.SubElement(sp, f"{{{P}}}spPr")
+    xfrm = etree.SubElement(spPr, f"{{{A}}}xfrm")
+    off = etree.SubElement(xfrm, f"{{{A}}}off")
+    off.set("x", str(x))
+    off.set("y", str(y))
+    ext = etree.SubElement(xfrm, f"{{{A}}}ext")
+    ext.set("cx", str(w))
+    ext.set("cy", str(h))
+    prstGeom = etree.SubElement(spPr, f"{{{A}}}prstGeom")
+    prstGeom.set("prst", "rect")
+    etree.SubElement(prstGeom, f"{{{A}}}avLst")
+    etree.SubElement(spPr, f"{{{A}}}noFill")
+
+    txBody = etree.SubElement(sp, f"{{{P}}}txBody")
+    bodyPr = etree.SubElement(txBody, f"{{{A}}}bodyPr")
+    bodyPr.set("wrap", "square")
+    bodyPr.set("anchor", anchor)
+    etree.SubElement(bodyPr, f"{{{A}}}normAutofit")
+    etree.SubElement(txBody, f"{{{A}}}lstStyle")
+
+    ap = etree.SubElement(txBody, f"{{{A}}}p")
+    for seg_text, is_ko in _split_lang(text):
+        ap.append(_sermon_make_run(seg_text, is_ko, font_size, color, bold))
+
+
+def _add_body_text_box(spTree, shape_id: int, name: str,
+                       x: int, y: int, w: int, h: int,
+                       paragraphs: list, font_size: str, color: str):
+    """여러 단락의 본문 텍스트 박스 추가."""
+    sp = etree.SubElement(spTree, f"{{{P}}}sp")
+    nvSpPr = etree.SubElement(sp, f"{{{P}}}nvSpPr")
+    cNvPr = etree.SubElement(nvSpPr, f"{{{P}}}cNvPr")
+    cNvPr.set("id", str(shape_id))
+    cNvPr.set("name", name)
+    cNvSpPr = etree.SubElement(nvSpPr, f"{{{P}}}cNvSpPr")
+    cNvSpPr.set("txBox", "1")
+    etree.SubElement(nvSpPr, f"{{{P}}}nvPr")
+    spPr = etree.SubElement(sp, f"{{{P}}}spPr")
+    xfrm = etree.SubElement(spPr, f"{{{A}}}xfrm")
+    off = etree.SubElement(xfrm, f"{{{A}}}off")
+    off.set("x", str(x))
+    off.set("y", str(y))
+    ext = etree.SubElement(xfrm, f"{{{A}}}ext")
+    ext.set("cx", str(w))
+    ext.set("cy", str(h))
+    prstGeom = etree.SubElement(spPr, f"{{{A}}}prstGeom")
+    prstGeom.set("prst", "rect")
+    etree.SubElement(prstGeom, f"{{{A}}}avLst")
+    etree.SubElement(spPr, f"{{{A}}}noFill")
+
+    txBody = etree.SubElement(sp, f"{{{P}}}txBody")
+    bodyPr = etree.SubElement(txBody, f"{{{A}}}bodyPr")
+    bodyPr.set("wrap", "square")
+    bodyPr.set("anchor", "t")
+    etree.SubElement(bodyPr, f"{{{A}}}normAutofit")
+    etree.SubElement(txBody, f"{{{A}}}lstStyle")
+
+    for para_text in paragraphs:
+        ap = etree.SubElement(txBody, f"{{{A}}}p")
+        ppr = etree.SubElement(ap, f"{{{A}}}pPr")
+        lnSpc = etree.SubElement(ppr, f"{{{A}}}lnSpc")
+        etree.SubElement(lnSpc, f"{{{A}}}spcPct").set("val", "100000")
+        spcAft = etree.SubElement(ppr, f"{{{A}}}spcAft")
+        etree.SubElement(spcAft, f"{{{A}}}spcPts").set("val", "200")
+
+        if not para_text.strip():
+            endRpr = etree.SubElement(ap, f"{{{A}}}endParaRPr")
+            endRpr.set("lang", "ko-KR")
+            endRpr.set("sz", font_size)
+            continue
+
+        for seg_text, is_ko in _split_lang(para_text):
+            ap.append(_sermon_make_run(seg_text, is_ko, font_size, color))
+
+
+def insert_sermon_slides(work_dir: Path, sermon_pptx_path: Path):
+    """설교 PPTX에서 텍스트를 추출하여 환한 디자인 슬라이드로 삽입.
+    성경본문 슬라이드(slide12 + overflow) 바로 뒤에 삽입됨.
+    """
+    slides_data = extract_sermon_text(sermon_pptx_path)
+    if not slides_data:
+        print("설교 PPT에서 슬라이드를 찾을 수 없습니다.")
+        return
+
+    print(f"설교 슬라이드 {len(slides_data)}장 추출")
+
+    slides_dir = work_dir / "ppt" / "slides"
+    rels_dir = slides_dir / "_rels"
+
+    # slide12의 layout rels 참조 가져오기 (동일한 layout 사용)
+    slide12_rels_path = rels_dir / "slide12.xml.rels"
+
+    # 성경 본문 관련 슬라이드들의 위치 파악 (slide12 + overflow)
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    pres_rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+
+    # slide12의 rId 찾기
+    slide12_rid = _find_slide12_rId(work_dir)
+
+    pres_tree = etree.parse(str(pres_path))
+    pres_root = pres_tree.getroot()
+    sld_id_lst = pres_root.find(f"{{{P}}}sldIdLst")
+    sld_ids = list(sld_id_lst.findall(f"{{{P}}}sldId"))
+
+    # slide12 위치 찾기
+    slide12_pos = 0
+    for idx, sld in enumerate(sld_ids):
+        if sld.get(f"{{{R}}}id") == slide12_rid:
+            slide12_pos = idx
+            break
+
+    # overflow 슬라이드(29+)가 slide12 뒤에 몇 개 있는지 확인
+    pres_rels_tree = etree.parse(str(pres_rels_path))
+    pres_rels_root = pres_rels_tree.getroot()
+
+    rid_to_target = {}
+    for rel in pres_rels_root.findall(f"{{{REL_NS}}}Relationship"):
+        rid_to_target[rel.get("Id")] = rel.get("Target", "")
+
+    overflow_count = 0
+    for i in range(slide12_pos + 1, len(sld_ids)):
+        rid = sld_ids[i].get(f"{{{R}}}id")
+        target = rid_to_target.get(rid, "")
+        # overflow slides are slide29+
+        m = re.search(r"slide(\d+)\.xml", target)
+        if m and int(m.group(1)) > 28:
+            overflow_count += 1
+        else:
+            break
+
+    insert_after_pos = slide12_pos + overflow_count  # 삽입 위치 (0-indexed)
+
+    for i, sdata in enumerate(slides_data):
+        slide_num = _next_slide_number(work_dir)
+
+        # 1. 슬라이드 XML 생성
+        sld_xml = _create_sermon_slide_xml(sdata["title"], sdata["body"])
+        xml_bytes = etree.tostring(
+            sld_xml, xml_declaration=True, encoding="UTF-8", standalone="yes"
+        )
+        new_slide_path = slides_dir / f"slide{slide_num}.xml"
+        new_slide_path.write_bytes(xml_bytes)
+
+        # 2. rels 파일 생성 (slide12와 동일한 layout 참조)
+        new_rels_path = rels_dir / f"slide{slide_num}.xml.rels"
+        shutil.copy2(slide12_rels_path, new_rels_path)
+
+        # 3. [Content_Types].xml 업데이트
+        ct_path = work_dir / "[Content_Types].xml"
+        ct_tree = etree.parse(str(ct_path))
+        ct_root = ct_tree.getroot()
+        override = etree.SubElement(ct_root, f"{{{CT_NS}}}Override")
+        override.set("PartName", f"/ppt/slides/slide{slide_num}.xml")
+        override.set(
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.presentationml.slide+xml",
+        )
+        ct_tree.write(str(ct_path), xml_declaration=True, encoding="UTF-8", standalone=True)
+
+        # 4. presentation.xml.rels에 relationship 추가
+        pres_rels_tree = etree.parse(str(pres_rels_path))
+        pres_rels_root = pres_rels_tree.getroot()
+        existing_rids = [
+            int(r.get("Id").replace("rId", ""))
+            for r in pres_rels_root.findall(f"{{{REL_NS}}}Relationship")
+            if r.get("Id", "").startswith("rId")
+        ]
+        new_rid = f"rId{max(existing_rids) + 1}"
+        new_rel = etree.SubElement(pres_rels_root, f"{{{REL_NS}}}Relationship")
+        new_rel.set("Id", new_rid)
+        new_rel.set("Type", SLIDE_TYPE)
+        new_rel.set("Target", f"slides/slide{slide_num}.xml")
+        pres_rels_tree.write(
+            str(pres_rels_path), xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+        # 5. presentation.xml의 sldIdLst에 삽입
+        pres_tree = etree.parse(str(pres_path))
+        pres_root = pres_tree.getroot()
+        sld_id_lst = pres_root.find(f"{{{P}}}sldIdLst")
+        existing_ids = [int(s.get("id")) for s in sld_id_lst.findall(f"{{{P}}}sldId")]
+        new_id = max(existing_ids) + 1
+
+        new_sld_id = etree.Element(f"{{{P}}}sldId")
+        new_sld_id.set("id", str(new_id))
+        new_sld_id.set(f"{{{R}}}id", new_rid)
+        sld_id_lst.insert(insert_after_pos + 1 + i, new_sld_id)
+        pres_tree.write(
+            str(pres_path), xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+
+        print(f"  slide{slide_num}.xml → {sdata['title'][:30]}...")
+
+    print(f"설교 슬라이드 {len(slides_data)}장 삽입 완료 (성경본문 뒤)")
+
+
 # --- PPTX 패킹/언패킹 -------------------------------------------------------
 
 def unpack(pptx_path: Path, work_dir: Path):

@@ -20,6 +20,7 @@ from scripts.update_slides import (
     A,
     P,
     build_slide12,
+    insert_sermon_slides,
     pack,
     split_by_language,
     unpack,
@@ -124,6 +125,13 @@ def main():
     if not input_path.exists():
         sys.exit(f"입력 파일이 없습니다: {input_path}")
 
+    sermon_pptx = None
+    for arg in sys.argv[2:]:
+        if arg.endswith(".pptx"):
+            sermon_pptx = Path(arg)
+            if not sermon_pptx.exists():
+                sys.exit(f"설교 PPT 파일이 없습니다: {sermon_pptx}")
+
     data = parse_input(input_path)
     date_str = data.get("날짜", "")
     prayer = data.get("대표기도", "")
@@ -140,6 +148,8 @@ def main():
     print(f"대표기도: {prayer}")
     print(f"설교제목: {sermon_title}")
     print(f"성경본문: {scripture_ref}")
+    if sermon_pptx:
+        print(f"설교 PPT: {sermon_pptx.name}")
     print()
 
     with tempfile.TemporaryDirectory() as work_dir:
@@ -154,6 +164,10 @@ def main():
 
         print("Slide 12: 성경 본문 생성")
         build_slide12(work, input_path)
+
+        if sermon_pptx:
+            print("\n설교 슬라이드 삽입:")
+            insert_sermon_slides(work, sermon_pptx)
 
         print()
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
