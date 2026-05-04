@@ -72,16 +72,42 @@ description: "Use this skill whenever the user asks to generate the weekly Sunda
 원본은 `오늘의 말씀` 다음에 `<a:br>` 3개 → 설교제목 → `<a:br>` 2개 → 성경본문 표기.
 이 줄바꿈 패턴은 그대로 유지.
 
-### Slide 12 — 성경 본문
+### Slide 12 — 성경 본문 (자동 페이지 분배)
 
 각 본문마다:
 - 첫 줄: 성경 약칭 + 장:절 (예: `요 17:3`) — bold, 단독 paragraph
-- 다음 줄(들): 절 번호로 시작하는 자동 번호 매기기 (`buAutoNum startAt="N"`)
+- 다음 줄(들): 본문 전체를 하나의 paragraph로 (language boundary 분할 적용)
 - 본문 사이에는 빈 줄 한 줄 삽입 (`spcPct val="150000"`)
-- 본문이 1절짜리면 번호 매기기 없이 줄글로 (paragraph만, no buAutoNum)
-- 본문이 여러 절이면 각 절을 별도 paragraph로, 시작 절 번호로 buAutoNum 적용
 - 본문 텍스트 스타일: `sz="2400" b="1"`, 색상은
   `<a:schemeClr val="tx2"><a:lumMod val="20000"/><a:lumOff val="80000"/></a:schemeClr>`
+- 줄 간격: `spcPts val="3480"` (34.8pt 고정)
+
+#### 페이지 넘침 처리 (Overflow Logic)
+
+본문이 slide 12의 텍스트 박스 높이(4526876 EMU ≈ 356pt)를 초과하면
+**자동으로 다음 슬라이드를 생성**하여 나머지 본문을 배치한다.
+
+**반드시 `scripts/update_slides.py build-slide12` 명령을 사용:**
+
+```bash
+python3 scripts/update_slides.py build-slide12 "$WORK" input/next_sunday.txt
+```
+
+이 명령은:
+1. 성경 본문 블록들의 예상 높이를 계산 (글자 수 기반 줄 바꿈 추정)
+2. 텍스트 박스에 들어가는 만큼 slide 12에 배치
+3. 넘치는 본문은 새 슬라이드(slide29+)를 생성하여 slide 12 바로 뒤에 삽입
+4. presentation.xml, [Content_Types].xml, rels 파일 자동 업데이트
+5. 이전 실행의 overflow 슬라이드는 자동 정리 후 재생성
+
+**높이 추정 상수:**
+- 텍스트 박스 너비: ~697pt → 한 줄 약 38자 (24pt bold 한글 기준)
+- 제목 줄 높이: 40pt
+- 본문 줄 높이: 34.8pt (`spcPts val="3480"`)
+- 블록 간 여백: 25pt
+
+**예시:** 갈 6:14(짧음) + 고전 2:2(짧음) + 갈 2:20(김) →
+slide 12에 갈 6:14 + 고전 2:2, 새 슬라이드에 갈 2:20
 
 ## 변경하지 말 것
 
@@ -128,10 +154,20 @@ unzip -q templates/master_slides.pptx -d "$WORK"
 4. 그 뒤의 `<a:br>` 2개 보존
 5. 성경본문 표기 영역(이전 `이사야 ... 10:31` 자리) 교체
 
-#### Slide 12 수정 패턴
+#### Slide 12 수정 패턴 (build-slide12 사용)
 
-`<p:txBody>` 내부 모든 `<a:p>`를 제거하고 새 본문 paragraphs로 재구성.
-`<a:bodyPr>`와 `<a:lstStyle>`는 보존.
+**직접 XML을 수정하지 말 것.** 반드시 아래 명령을 사용:
+
+```bash
+python3 scripts/update_slides.py build-slide12 "$WORK" input/next_sunday.txt
+```
+
+이 명령이 자동으로 처리하는 것:
+- `<p:txBody>` 내부 모든 `<a:p>`를 제거하고 새 본문 paragraphs로 재구성
+- `<a:bodyPr>`와 `<a:lstStyle>`는 보존
+- 본문이 한 페이지를 초과하면 overflow 슬라이드 자동 생성
+- 한글 인코딩 검증
+- 이전 overflow 슬라이드 자동 정리
 
 ### 4. ZIP 재패킹
 
@@ -154,7 +190,7 @@ ZIP의 첫 번째 엔트리여야 함:
 ### 5. 검증
 
 ```bash
-# 텍스트 추출로 변경 확인
+# 텍스트 추출로 변경 확인 (slide 10, 11, 12 + overflow 슬라이드 자동 포함)
 python3 scripts/update_slides.py verify "$OUTPUT"
 
 # (선택) PDF 변환하여 시각 확인 — LibreOffice 필요

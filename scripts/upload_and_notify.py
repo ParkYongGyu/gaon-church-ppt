@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""
+PPT를 Google Drive에 업로드하고 이메일로 링크를 전송합니다.
+
+최초 1회 설정:
+  1. Google Cloud Console에서 OAuth credentials JSON 다운로드
+  2. .secrets/google_credentials.json 으로 저장
+  3. python3 scripts/upload_and_notify.py output/26_05_03.pptx
+     → 브라우저에서 Google 계정 인증 (최초 1회만)
+
+매주 사용:
+  python3 scripts/upload_and_notify.py output/26_05_03.pptx
+
+환경변수 (이메일 ���송용, 선택):
+  GMAIL_SENDER       — 발신 Gmail 주소
+  GMAIL_APP_PASSWORD  — Gmail 앱 비밀번호
+"""
+
+import os
+import sys
+import smtplib
+from email.mime.text import MIMEText
+from pathlib import Path
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
+]
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TOKEN_PATH = PROJECT_ROOT / ".secrets" / "google_token.json"
+CREDS_PATH = PROJECT_ROOT / ".secrets" / "google_credentials.json"
+
+DRIVE_FOLDER_NAME = "가온교회 주일예배"
+DRIVE_FOLDER_ID = os.environ.get(
+    "GAON_DRIVE_FOLDER_ID", "1UpMqB6gIFZqBmxGfQRQBJSibAmUn0FlV"
+)
+RECIPIENT = os.environ.get("GAON_EMAIL_RECIPIENT", "yonggyup.park@gmail.com")
+PPTX_MIME = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
+
+def get_drive_service():
+    creds = None
+    if TOKEN_PATH.exists():
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not CREDS_PATH.exists():
+                sys.exit(
+                    f"OAuth credentials 파일이 없습니다: {CREDS_PATH}\n"
+                    "Google Cloud Console → API 및 서비스 → 사용자 인증 정�� 에서\n"
+                    "'데스크톱 앱' OAuth 클라이언트 ID를 생성하고 JSON을 다운로드하세요."
+                )
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(CREDS_PATH), SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+
+        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_PATH.write_text(creds.to_json())
+
+    return build("drive", "v3", credentials=creds)
+
+
+def get_or_create_folder(service) -> str:
+    if DRIVE_FOLDER_ID:
+        return DRIVE_FOLDER_ID
+
+    results = (
+        service.files()
+        .list(
+            q=f"name='{DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            spaces="drive",
+            fields="files(id)",
+        )
+        .execute()
+    )
+    folders = results.get("files", [])
+    if folders:
+        return folders[0]["id"]
+
+    folder = (
+        service.files()
+        .create(
+            body={
+                "name": DRIVE_FOLDER_NAME,
+                "mimeType": "application/vnd.google-apps.folder",
+            },
+            fields="id",
+        )
+        .execute()
+    )
+    return folder["id"]
+
+
+def upload_to_drive(service, file_path: Path) -> str:
+    folder_id = get_or_create_folder(service)
+    media = MediaFileUpload(str(file_path), mimetype=PPTX_MIME, resumable=True)
+
+    file_metadata = {
+        "name": file_path.name,
+        "parents": [folder_id],
+    }
+
+    existing = (
+        service.files()
+        .list(
+            q=f"name='{file_path.name}' and '{folder_id}' in parents and trashed=false",
+            spaces="drive",
+            fields="files(id)",
+        )
+        .execute()
+        .get("files", [])
+    )
+
+    if existing:
+        file = (
+            service.files()
+            .update(
+                fileId=existing[0]["id"],
+                media_body=media,
+                fields="id,webViewLink",
+            )
+            .execute()
+        )
+    else:
+        file = (
+            service.files()
+            .create(
+                body=file_metadata,
+                media_body=media,
+                fields="id,webViewLink",
+            )
+            .execute()
+        )
+
+    return file["webViewLink"]
+
+
+def send_email(link: str, filename: str):
+    sender = os.environ.get("GMAIL_SENDER", "")
+    password = os.environ.get("GMAIL_APP_PASSWORD", "")
+
+    if not sender or not password:
+        print(f"  링크: {link}")
+        print(
+            "  (이메일 전송을 위해 GMAIL_SENDER, GMAIL_APP_PASSWORD를 설정하세요)"
+        )
+        return False
+
+    body = (
+        f"이번 주일예배 슬라이드가 준비되었습니다.\n\n"
+        f"다운로드: {link}\n\n"
+        f"파일명: {filename}"
+    )
+    msg = MIMEText(body)
+    msg["Subject"] = f"가온교회 주일예배 슬라이드 - {filename}"
+    msg["From"] = sender
+    msg["To"] = RECIPIENT
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, password)
+        server.sendmail(sender, [RECIPIENT], msg.as_string())
+
+    return True
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit("사용법: python3 scripts/upload_and_notify.py <pptx파일>")
+
+    file_path = Path(sys.argv[1]).resolve()
+    if not file_path.exists():
+        sys.exit(f"파일이 없습니다: {file_path}")
+
+    print(f"Google Drive 업로드 중: {file_path.name}")
+    service = get_drive_service()
+    link = upload_to_drive(service, file_path)
+    print(f"업로드 완료: {link}")
+
+    if send_email(link, file_path.name):
+        print(f"이메일 전송 완료: {RECIPIENT}")
+
+    # Routine이 읽을 수 있도록 링크를 stdout에 출력
+    print(f"DRIVE_LINK={link}")
+
+
+if __name__ == "__main__":
+    main()

@@ -20,6 +20,13 @@ venv/
 .idea/
 *.swp
 
+# 입력 파일 (Routine이 자동 생성)
+input/
+
+# Google OAuth 토큰 및 인증 정보
+.secrets/
+
 # Claude Code 로컬 설정 (필요시 주석 해제)
 # .claude/sessions/
 # .claude/local/
+.vercel

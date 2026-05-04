@@ -11,15 +11,19 @@
       → slide 10/11/12의 텍스트만 추출하여 출력 (변경 검증용)
   python3 scripts/update_slides.py split-title <설교제목>
       → 설교제목 한 줄을 한글/영문 경계로 분할하여 (lang, text) 튜플 출력
+  python3 scripts/update_slides.py build-slide12 <work_dir> <input_file>
+      → input 파일에서 성경 본문을 파싱하여 slide 12 생성 (넘치면 추가 슬라이드)
 
 이 스크립트는 stdlib(zipfile, re)와 lxml만 사용합니다.
 lxml이 없으면 'pip3 install lxml'.
 """
 
+import math
 import re
 import sys
 import shutil
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 
 NS = {
@@ -27,11 +31,26 @@ NS = {
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
+A = NS["a"]
+P = NS["p"]
+R = NS["r"]
+REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+SLIDE_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
+
+KOREAN_RE = re.compile(r"[가-힣ㄱ-ㆎ]")
+
+# --- 높이 추정 상수 (EMU 단위, 1pt = 12700 EMU) --------------------------------
+
+TEXTBOX_HEIGHT_EMU = 4526876
+TEXTBOX_WIDTH_PT = 697.0
+CHARS_PER_LINE = 38
+TITLE_HEIGHT_PT = 40.0
+BODY_LINE_HEIGHT_PT = 34.8
+SPACER_HEIGHT_PT = 25.0
+
 
 # --- 한글/영문 경계 분할 -----------------------------------------------------
-
-# 한글 음절(가-힣), 자음(ㄱ-ㅎ), 모음(ㅏ-ㅣ)
-KOREAN_RE = re.compile(r"[\uac00-\ud7a3\u3131-\u318e]")
 
 
 def is_korean_char(ch: str) -> bool:
@@ -39,11 +58,6 @@ def is_korean_char(ch: str) -> bool:
 
 
 def split_by_language(text: str):
-    """
-    텍스트를 한글/비한글 연속 구간으로 분할.
-    반환: [(lang, segment), ...]  lang은 'ko' 또는 'en'.
-    공백은 직전 구간에 포함됨 (직전 구간이 없으면 다음 구간에 포함).
-    """
     if not text:
         return []
 
@@ -53,7 +67,6 @@ def split_by_language(text: str):
 
     for ch in text:
         if ch.isspace():
-            # 공백은 직전 언어를 유지
             if current_lang is None:
                 current_buf.append(ch)
                 continue
@@ -73,10 +86,470 @@ def split_by_language(text: str):
             current_buf = [ch]
 
     if current_buf:
-        # current_lang이 None이면 (전체 공백) en으로 처리
         segments.append((current_lang or "en", "".join(current_buf)))
 
     return segments
+
+
+# --- 성경 본문 파싱 -----------------------------------------------------------
+
+
+def parse_scripture_blocks(input_path: Path):
+    """input/next_sunday.txt에서 성경 본문 블록들을 파싱.
+    Returns: [(ref, body_text), ...]
+    """
+    text = input_path.read_text(encoding="utf-8")
+    lines = text.strip().split("\n")
+
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.strip() == "" and i > 0:
+            if any(
+                lines[j].startswith(
+                    ("날짜", "대표기도", "설교제목", "설교자", "성경본문")
+                )
+                for j in range(i)
+            ):
+                body_start = i + 1
+                break
+
+    body_lines = lines[body_start:]
+    blocks = []
+    current_ref = None
+    current_body_lines = []
+    ref_pattern = re.compile(r"^[가-힣]+\s+\d+:\d+")
+
+    for line in body_lines:
+        stripped = line.strip()
+        if not stripped:
+            if current_ref and current_body_lines:
+                blocks.append((current_ref, "\n".join(current_body_lines)))
+                current_ref = None
+                current_body_lines = []
+            continue
+        if ref_pattern.match(stripped) and not current_body_lines:
+            current_ref = stripped
+        elif current_ref:
+            current_body_lines.append(stripped)
+
+    if current_ref and current_body_lines:
+        blocks.append((current_ref, "\n".join(current_body_lines)))
+
+    return blocks
+
+
+# --- 높이 추정 ----------------------------------------------------------------
+
+
+def estimate_block_height_pt(ref: str, body: str) -> float:
+    """성경 본문 한 블록이 차지할 예상 높이(pt)."""
+    height = TITLE_HEIGHT_PT
+    full_body = " ".join(body.split("\n"))
+    char_count = len(full_body)
+    wrapped_lines = max(1, math.ceil(char_count / CHARS_PER_LINE))
+    height += wrapped_lines * BODY_LINE_HEIGHT_PT
+    return height
+
+
+def split_blocks_into_pages(blocks):
+    """본문 블록들을 페이지별로 분배.
+    Returns: [[(ref, body), ...], [(ref, body), ...], ...]
+    """
+    max_height_pt = TEXTBOX_HEIGHT_EMU / 12700.0
+    pages = []
+    current_page = []
+    current_height = 0.0
+
+    for i, (ref, body) in enumerate(blocks):
+        block_h = estimate_block_height_pt(ref, body)
+        spacer = SPACER_HEIGHT_PT if current_page else 0.0
+
+        if current_page and current_height + spacer + block_h > max_height_pt:
+            pages.append(current_page)
+            current_page = [(ref, body)]
+            current_height = block_h
+        else:
+            current_height += spacer + block_h
+            current_page.append((ref, body))
+
+    if current_page:
+        pages.append(current_page)
+
+    return pages
+
+
+# --- XML 헬퍼 (Slide 12 빌드) -------------------------------------------------
+
+
+def _make_rpr(is_ko: bool):
+    rpr = etree.SubElement(etree.Element("dummy"), f"{{{A}}}rPr")
+    if is_ko:
+        rpr.set("lang", "ko-KR")
+        rpr.set("altLang", "en-US")
+    else:
+        rpr.set("lang", "en-US")
+        rpr.set("altLang", "ko-KR")
+    rpr.set("sz", "2400")
+    rpr.set("b", "1")
+    rpr.set("dirty", "0")
+    fill = etree.SubElement(rpr, f"{{{A}}}solidFill")
+    scheme = etree.SubElement(fill, f"{{{A}}}schemeClr")
+    scheme.set("val", "tx2")
+    etree.SubElement(scheme, f"{{{A}}}lumMod").set("val", "20000")
+    etree.SubElement(scheme, f"{{{A}}}lumOff").set("val", "80000")
+    return rpr
+
+
+def _make_run(text: str, is_ko: bool):
+    r = etree.Element(f"{{{A}}}r")
+    r.append(_make_rpr(is_ko))
+    t = etree.SubElement(r, f"{{{A}}}t")
+    if " " in text:
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    t.text = text
+    return r
+
+
+def _make_end_para_rpr():
+    rpr = etree.Element(f"{{{A}}}endParaRPr")
+    rpr.set("lang", "en-US")
+    rpr.set("altLang", "ko-KR")
+    rpr.set("sz", "1600")
+    rpr.set("b", "1")
+    rpr.set("dirty", "0")
+    fill = etree.SubElement(rpr, f"{{{A}}}solidFill")
+    scheme = etree.SubElement(fill, f"{{{A}}}schemeClr")
+    scheme.set("val", "tx2")
+    etree.SubElement(scheme, f"{{{A}}}lumMod").set("val", "20000")
+    etree.SubElement(scheme, f"{{{A}}}lumOff").set("val", "80000")
+    return rpr
+
+
+def _make_title_paragraph(ref_text: str):
+    p = etree.Element(f"{{{A}}}p")
+    for text, is_ko in _split_lang(ref_text):
+        p.append(_make_run(text, is_ko))
+    p.append(_make_end_para_rpr())
+    return p
+
+
+def _make_body_paragraph(text: str):
+    p = etree.Element(f"{{{A}}}p")
+    ppr = etree.SubElement(p, f"{{{A}}}pPr")
+    lnSpc = etree.SubElement(ppr, f"{{{A}}}lnSpc")
+    etree.SubElement(lnSpc, f"{{{A}}}spcPts").set("val", "3480")
+    for t, is_ko in _split_lang(text):
+        p.append(_make_run(t, is_ko))
+    return p
+
+
+def _make_spacer_paragraph():
+    p = etree.Element(f"{{{A}}}p")
+    ppr = etree.SubElement(p, f"{{{A}}}pPr")
+    ppr.set("marL", "457200")
+    ppr.set("indent", "-457200")
+    lnSpc = etree.SubElement(ppr, f"{{{A}}}lnSpc")
+    etree.SubElement(lnSpc, f"{{{A}}}spcPct").set("val", "150000")
+    p.append(_make_end_para_rpr())
+    return p
+
+
+def _split_lang(text: str):
+    """split_by_language wrapper returning (text, is_korean) tuples."""
+    segs = split_by_language(text)
+    return [(seg, lang == "ko") for lang, seg in segs]
+
+
+def _build_txbody_paragraphs(blocks):
+    """성경 본문 블록 리스트 → <a:p> 엘리먼트 리스트."""
+    paragraphs = []
+    for i, (ref, body) in enumerate(blocks):
+        if i > 0:
+            paragraphs.append(_make_spacer_paragraph())
+        paragraphs.append(_make_title_paragraph(ref))
+        full_body = " ".join(body.split("\n"))
+        paragraphs.append(_make_body_paragraph(full_body))
+    return paragraphs
+
+
+# --- 슬라이드 추가 (PPTX 구조 업데이트) -----------------------------------------
+
+
+def _next_slide_number(work_dir: Path) -> int:
+    slides_dir = work_dir / "ppt" / "slides"
+    existing = [
+        int(f.stem.replace("slide", ""))
+        for f in slides_dir.glob("slide*.xml")
+        if f.stem.replace("slide", "").isdigit()
+    ]
+    return max(existing) + 1 if existing else 1
+
+
+def _find_slide12_rId(work_dir: Path) -> str:
+    """presentation.xml.rels에서 slide12.xml의 rId를 찾는다."""
+    rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+    tree = etree.parse(str(rels_path))
+    for rel in tree.findall(f"{{{REL_NS}}}Relationship"):
+        if rel.get("Target") == "slides/slide12.xml":
+            return rel.get("Id")
+    return ""
+
+
+def _find_slide12_sldId(work_dir: Path, rid: str) -> str:
+    """presentation.xml에서 slide12의 sldId를 찾는다."""
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    tree = etree.parse(str(pres_path))
+    root = tree.getroot()
+    for sld in root.iter(f"{{{P}}}sldId"):
+        if sld.get(f"{{{R}}}id") == rid:
+            return sld.get("id")
+    return ""
+
+
+def add_overflow_slide(work_dir: Path, blocks, page_index: int) -> str:
+    """slide 12 구조를 복제하여 새 슬라이드를 추가하고 presentation에 등록.
+    Returns: 새 슬라이드 파일 경로.
+    """
+    slide_num = _next_slide_number(work_dir)
+    slides_dir = work_dir / "ppt" / "slides"
+    rels_dir = slides_dir / "_rels"
+
+    # 1. slide12.xml을 기반으로 새 슬라이드 XML 생성
+    slide12_path = slides_dir / "slide12.xml"
+    tree = etree.parse(str(slide12_path))
+    root = tree.getroot()
+
+    txBody = root.find(f".//{{{P}}}txBody")
+    bodyPr = txBody.find(f"{{{A}}}bodyPr")
+    lstStyle = txBody.find(f"{{{A}}}lstStyle")
+
+    for p in txBody.findall(f"{{{A}}}p"):
+        txBody.remove(p)
+
+    for para in _build_txbody_paragraphs(blocks):
+        txBody.append(para)
+
+    new_slide_path = slides_dir / f"slide{slide_num}.xml"
+    xml_bytes = etree.tostring(
+        tree, xml_declaration=True, encoding="UTF-8", standalone="yes"
+    )
+    new_slide_path.write_bytes(xml_bytes)
+
+    # 2. rels 파일 복사 (slide12와 동일한 레이아웃 참조)
+    slide12_rels = rels_dir / "slide12.xml.rels"
+    new_rels = rels_dir / f"slide{slide_num}.xml.rels"
+    shutil.copy2(slide12_rels, new_rels)
+
+    # 3. [Content_Types].xml에 추가
+    ct_path = work_dir / "[Content_Types].xml"
+    ct_tree = etree.parse(str(ct_path))
+    ct_root = ct_tree.getroot()
+    override = etree.SubElement(ct_root, f"{{{CT_NS}}}Override")
+    override.set("PartName", f"/ppt/slides/slide{slide_num}.xml")
+    override.set(
+        "ContentType",
+        "application/vnd.openxmlformats-officedocument.presentationml.slide+xml",
+    )
+    ct_tree.write(str(ct_path), xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    # 4. presentation.xml.rels에 새 relationship 추가
+    pres_rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+    pres_rels_tree = etree.parse(str(pres_rels_path))
+    pres_rels_root = pres_rels_tree.getroot()
+
+    existing_rids = [
+        int(r.get("Id").replace("rId", ""))
+        for r in pres_rels_root.findall(f"{{{REL_NS}}}Relationship")
+        if r.get("Id", "").startswith("rId")
+    ]
+    new_rid_num = max(existing_rids) + 1
+    new_rid = f"rId{new_rid_num}"
+
+    new_rel = etree.SubElement(pres_rels_root, f"{{{REL_NS}}}Relationship")
+    new_rel.set("Id", new_rid)
+    new_rel.set("Type", SLIDE_TYPE)
+    new_rel.set("Target", f"slides/slide{slide_num}.xml")
+    pres_rels_tree.write(
+        str(pres_rels_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    # 5. presentation.xml의 sldIdLst에 slide 12 바로 뒤에 삽입
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    pres_tree = etree.parse(str(pres_path))
+    pres_root = pres_tree.getroot()
+
+    sld_id_lst = pres_root.find(f"{{{P}}}sldIdLst")
+    slide12_rid = _find_slide12_rId(work_dir)
+
+    existing_ids = [
+        int(s.get("id")) for s in sld_id_lst.findall(f"{{{P}}}sldId")
+    ]
+    new_id = max(existing_ids) + 1
+
+    # slide12의 위치를 찾아 page_index만큼 뒤에 삽입
+    slide12_idx = 0
+    for idx, sld in enumerate(sld_id_lst.findall(f"{{{P}}}sldId")):
+        if sld.get(f"{{{R}}}id") == slide12_rid:
+            slide12_idx = idx
+            break
+
+    new_sld_id = etree.Element(f"{{{P}}}sldId")
+    new_sld_id.set("id", str(new_id))
+    new_sld_id.set(f"{{{R}}}id", new_rid)
+    sld_id_lst.insert(slide12_idx + page_index, new_sld_id)
+
+    pres_tree.write(
+        str(pres_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    return str(new_slide_path)
+
+
+def remove_overflow_slides(work_dir: Path):
+    """이전 실행에서 생성된 overflow 슬라이드(slide29 이상)를 정리."""
+    slides_dir = work_dir / "ppt" / "slides"
+    rels_dir = slides_dir / "_rels"
+    pres_rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    ct_path = work_dir / "[Content_Types].xml"
+
+    overflow_slides = sorted(
+        f
+        for f in slides_dir.glob("slide*.xml")
+        if f.stem.replace("slide", "").isdigit()
+        and int(f.stem.replace("slide", "")) > 28
+    )
+
+    if not overflow_slides:
+        return
+
+    overflow_nums = [int(f.stem.replace("slide", "")) for f in overflow_slides]
+
+    # presentation.xml.rels에서 제거
+    pres_rels_tree = etree.parse(str(pres_rels_path))
+    pres_rels_root = pres_rels_tree.getroot()
+    rids_to_remove = set()
+    for rel in pres_rels_root.findall(f"{{{REL_NS}}}Relationship"):
+        target = rel.get("Target", "")
+        for num in overflow_nums:
+            if target == f"slides/slide{num}.xml":
+                rids_to_remove.add(rel.get("Id"))
+                pres_rels_root.remove(rel)
+                break
+    pres_rels_tree.write(
+        str(pres_rels_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    # presentation.xml의 sldIdLst에서 제거
+    pres_tree = etree.parse(str(pres_path))
+    pres_root = pres_tree.getroot()
+    sld_id_lst = pres_root.find(f"{{{P}}}sldIdLst")
+    for sld in list(sld_id_lst.findall(f"{{{P}}}sldId")):
+        if sld.get(f"{{{R}}}id") in rids_to_remove:
+            sld_id_lst.remove(sld)
+    pres_tree.write(
+        str(pres_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    # [Content_Types].xml에서 제거
+    ct_tree = etree.parse(str(ct_path))
+    ct_root = ct_tree.getroot()
+    for ov in list(ct_root.findall(f"{{{CT_NS}}}Override")):
+        pn = ov.get("PartName", "")
+        for num in overflow_nums:
+            if pn == f"/ppt/slides/slide{num}.xml":
+                ct_root.remove(ov)
+                break
+    ct_tree.write(str(ct_path), xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    # 파일 삭제
+    for f in overflow_slides:
+        f.unlink(missing_ok=True)
+        rels_f = rels_dir / f"{f.name}.rels"
+        rels_f.unlink(missing_ok=True)
+
+
+# --- build-slide12 메인 -------------------------------------------------------
+
+
+def build_slide12(work_dir: Path, input_path: Path):
+    """input 파일에서 성경 본문을 파싱하여 slide 12를 생성.
+    본문이 한 페이지를 초과하면 추가 슬라이드를 자동 생성.
+    """
+    blocks = parse_scripture_blocks(input_path)
+    if not blocks:
+        sys.exit("성경 본문 블록을 찾을 수 없습니다.")
+
+    # 이전 overflow 슬라이드 정리
+    remove_overflow_slides(work_dir)
+
+    # 블록을 페이지별로 분배
+    pages = split_blocks_into_pages(blocks)
+
+    print(f"성경 본문 {len(blocks)}개 → {len(pages)}페이지로 분배")
+    for i, page in enumerate(pages):
+        refs = [ref for ref, _ in page]
+        print(f"  페이지 {i + 1}: {', '.join(refs)}")
+
+    # 첫 페이지 → slide 12에 직접 적용
+    slide12_path = work_dir / "ppt" / "slides" / "slide12.xml"
+    tree = etree.parse(str(slide12_path))
+    root = tree.getroot()
+    txBody = root.find(f".//{{{P}}}txBody")
+
+    for p in txBody.findall(f"{{{A}}}p"):
+        txBody.remove(p)
+
+    for para in _build_txbody_paragraphs(pages[0]):
+        txBody.append(para)
+
+    xml_bytes = etree.tostring(
+        tree, xml_declaration=True, encoding="UTF-8", standalone="yes"
+    )
+    slide12_path.write_bytes(xml_bytes)
+    print(f"  slide12.xml 업데이트 완료")
+
+    # 2페이지 이상이면 overflow 슬라이드 생성
+    for page_idx in range(1, len(pages)):
+        new_path = add_overflow_slide(work_dir, pages[page_idx], page_idx)
+        print(f"  {Path(new_path).name} 생성 완료 (overflow 페이지 {page_idx + 1})")
+
+    # 검증
+    _verify_slide12_encoding(work_dir, pages)
+
+
+def _verify_slide12_encoding(work_dir: Path, pages):
+    """생성된 슬라이드들의 한글 인코딩 검증."""
+    slides_dir = work_dir / "ppt" / "slides"
+
+    all_ok = True
+    files_to_check = ["slide12.xml"]
+    for i in range(1, len(pages)):
+        overflow = sorted(
+            f.name
+            for f in slides_dir.glob("slide*.xml")
+            if f.stem.replace("slide", "").isdigit()
+            and int(f.stem.replace("slide", "")) > 28
+        )
+        files_to_check.extend(overflow)
+        break
+
+    for fname in files_to_check:
+        fpath = slides_dir / fname
+        if not fpath.exists():
+            continue
+        tree = etree.parse(str(fpath))
+        texts = []
+        for t_elem in tree.iter(f"{{{A}}}t"):
+            if t_elem.text:
+                texts.append(t_elem.text)
+        full = "".join(texts)
+        if "�" in full:
+            print(f"  WARNING: {fname}에서 인코딩 깨짐 감지!")
+            all_ok = False
+
+    if all_ok:
+        print("인코딩 검증 통과")
 
 
 # --- PPTX 패킹/언패킹 -------------------------------------------------------
@@ -91,10 +564,6 @@ def unpack(pptx_path: Path, work_dir: Path):
 
 
 def pack(work_dir: Path, output_pptx: Path):
-    """
-    [Content_Types].xml을 ZIP의 첫 엔트리로 두고, 나머지를 deflate로 압축.
-    pptx 사양 준수.
-    """
     output_pptx.parent.mkdir(parents=True, exist_ok=True)
     if output_pptx.exists():
         output_pptx.unlink()
@@ -104,10 +573,7 @@ def pack(work_dir: Path, output_pptx: Path):
         raise FileNotFoundError(f"{content_types} not found")
 
     with zipfile.ZipFile(output_pptx, "w", zipfile.ZIP_DEFLATED) as zf:
-        # [Content_Types].xml을 먼저
         zf.write(content_types, "[Content_Types].xml")
-
-        # 나머지 파일을 디렉토리 순회 순서로
         for path in sorted(work_dir.rglob("*")):
             if not path.is_file():
                 continue
@@ -122,14 +588,16 @@ def pack(work_dir: Path, output_pptx: Path):
 # --- 검증 -------------------------------------------------------------------
 
 def verify(pptx_path: Path):
-    """slide 10, 11, 12의 텍스트를 추출하여 출력."""
-    try:
-        from lxml import etree
-    except ImportError:
-        sys.exit("lxml이 필요합니다: pip3 install lxml")
-
     with zipfile.ZipFile(pptx_path, "r") as z:
-        for slide_num in (10, 11, 12):
+        slide_nums = [10, 11, 12]
+        # overflow 슬라이드도 검증
+        for name in z.namelist():
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
+                num_str = name.replace("ppt/slides/slide", "").replace(".xml", "")
+                if num_str.isdigit() and int(num_str) > 28:
+                    slide_nums.append(int(num_str))
+
+        for slide_num in sorted(slide_nums):
             slide_path = f"ppt/slides/slide{slide_num}.xml"
             print(f"\n=== Slide {slide_num} ===")
             try:
@@ -138,7 +606,7 @@ def verify(pptx_path: Path):
                 print(f"  (없음)")
                 continue
             tree = etree.fromstring(xml)
-            for t in tree.iter("{%s}t" % NS["a"]):
+            for t in tree.iter("{%s}t" % A):
                 if t.text:
                     print(t.text)
 
@@ -175,9 +643,25 @@ def main():
             marker = "ko-KR" if lang == "ko" else "en-US"
             print(f"  [{marker}] {seg!r}")
 
+    elif cmd == "build-slide12":
+        if len(sys.argv) != 4:
+            sys.exit("usage: build-slide12 <work_dir> <input_file>")
+        build_slide12(Path(sys.argv[2]), Path(sys.argv[3]))
+
     else:
         sys.exit(f"Unknown command: {cmd}")
 
 
+# lxml lazy import
+try:
+    from lxml import etree
+except ImportError:
+    pass
+
+
 if __name__ == "__main__":
+    try:
+        from lxml import etree
+    except ImportError:
+        sys.exit("lxml이 필요합니다: pip3 install lxml")
     main()
