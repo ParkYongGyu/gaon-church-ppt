@@ -2,26 +2,25 @@
 """
 PPT를 Google Drive에 업로드하고 이메일로 링크를 전송합니다.
 
-최초 1회 설정:
-  1. Google Cloud Console에서 OAuth credentials JSON 다운로드
-  2. .secrets/google_credentials.json 으로 저장
-  3. python3 scripts/upload_and_notify.py output/26_05_03.pptx
-     → 브라우저에서 Google 계정 인증 (최초 1회만)
+인증 방식 (우선순위 순):
+  1. Service Account (CI/자동화 권장 — 토큰 만료 없음)
+     - GOOGLE_SERVICE_ACCOUNT_JSON 환경변수 또는 .secrets/service_account.json
+  2. OAuth2 User Credentials (로컬 수동 실행용)
+     - .secrets/google_credentials.json + .secrets/google_token.json
 
-매주 사용:
-  python3 scripts/upload_and_notify.py output/26_05_03.pptx
-
-환경변수 (이메일 ���송용, 선택):
+환경변수 (이메일 전송용, 선택):
   GMAIL_SENDER       — 발신 Gmail 주소
   GMAIL_APP_PASSWORD  — Gmail 앱 비밀번호
 """
 
+import json
 import os
 import sys
 import smtplib
 from email.mime.text import MIMEText
 from pathlib import Path
 
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -36,6 +35,7 @@ SCOPES = [
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOKEN_PATH = PROJECT_ROOT / ".secrets" / "google_token.json"
 CREDS_PATH = PROJECT_ROOT / ".secrets" / "google_credentials.json"
+SA_PATH = PROJECT_ROOT / ".secrets" / "service_account.json"
 
 DRIVE_FOLDER_NAME = "가온교회 주일예배"
 DRIVE_FOLDER_ID = os.environ.get(
@@ -47,7 +47,21 @@ PPTX_MIME = (
 )
 
 
-def get_drive_service():
+def _get_service_account_creds():
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        info = json.loads(sa_json)
+        return service_account.Credentials.from_service_account_info(
+            info, scopes=SCOPES
+        )
+    if SA_PATH.exists():
+        return service_account.Credentials.from_service_account_file(
+            str(SA_PATH), scopes=SCOPES
+        )
+    return None
+
+
+def _get_oauth_creds():
     creds = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
@@ -58,9 +72,10 @@ def get_drive_service():
         else:
             if not CREDS_PATH.exists():
                 sys.exit(
-                    f"OAuth credentials 파일이 없습니다: {CREDS_PATH}\n"
-                    "Google Cloud Console → API 및 서비스 → 사용자 인증 정�� 에서\n"
-                    "'데스크톱 앱' OAuth 클라이언트 ID를 생성하고 JSON을 다운로드하세요."
+                    "인증 정보가 없습니다.\n"
+                    "Service Account: GOOGLE_SERVICE_ACCOUNT_JSON 환경변수 "
+                    "또는 .secrets/service_account.json\n"
+                    "OAuth2: .secrets/google_credentials.json 필요"
                 )
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(CREDS_PATH), SCOPES
@@ -70,6 +85,16 @@ def get_drive_service():
         TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         TOKEN_PATH.write_text(creds.to_json())
 
+    return creds
+
+
+def get_drive_service():
+    creds = _get_service_account_creds()
+    if creds:
+        print("Service Account 인증 사용")
+    else:
+        creds = _get_oauth_creds()
+        print("OAuth2 사용자 인증 사용")
     return build("drive", "v3", credentials=creds)
 
 
@@ -209,7 +234,6 @@ def main():
     if send_email(link, file_path.name, recipients):
         print(f"이메일 전송 완료: {', '.join(recipients)}")
 
-    # Routine이 읽을 수 있도록 링크를 stdout에 출력
     print(f"DRIVE_LINK={link}")
 
 
