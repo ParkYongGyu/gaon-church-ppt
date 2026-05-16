@@ -108,6 +108,8 @@ def get_or_create_folder(service) -> str:
             q=f"name='{DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
             spaces="drive",
             fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         )
         .execute()
     )
@@ -123,6 +125,7 @@ def get_or_create_folder(service) -> str:
                 "mimeType": "application/vnd.google-apps.folder",
             },
             fields="id",
+            supportsAllDrives=True,
         )
         .execute()
     )
@@ -144,6 +147,8 @@ def upload_to_drive(service, file_path: Path) -> str:
             q=f"name='{file_path.name}' and '{folder_id}' in parents and trashed=false",
             spaces="drive",
             fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         )
         .execute()
         .get("files", [])
@@ -156,6 +161,7 @@ def upload_to_drive(service, file_path: Path) -> str:
                 fileId=existing[0]["id"],
                 media_body=media,
                 fields="id,webViewLink",
+                supportsAllDrives=True,
             )
             .execute()
         )
@@ -166,6 +172,7 @@ def upload_to_drive(service, file_path: Path) -> str:
                 body=file_metadata,
                 media_body=media,
                 fields="id,webViewLink",
+                supportsAllDrives=True,
             )
             .execute()
         )
