@@ -318,7 +318,7 @@ export default function Home() {
             </p>
           )}
           <p className="mt-1 text-xs text-stone-400">
-            이철준 원로목사 등 별도 설교 슬라이드가 있을 때 업로드
+            이철준 원로목사님 등 별도 설교 슬라이드가 있을 때 업로드
           </p>
         </Field>
 
