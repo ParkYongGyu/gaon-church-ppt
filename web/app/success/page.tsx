@@ -15,7 +15,7 @@ export default async function Success({
       <p className="mt-2 text-stone-500">
         {immediate
           ? "슬라이드 생성이 시작되었습니다. 약 1~2분 후 Drive 업로드와 메일 발송이 완료됩니다."
-          : "토요일 저녁 8시에 슬라이드가 자동 생성됩니다."}
+          : "저장만 완료되었습니다. PPT 생성은 “저장하고 바로 생성”으로 실행하세요."}
       </p>
       <Link
         href="/"

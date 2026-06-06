@@ -1,9 +1,6 @@
 name: 가온교회 주일예배 슬라이드 생성
 
 on:
-  schedule:
-    # 매주 토요일 11:00 UTC = 토요일 20:00 KST
-    - cron: "0 11 * * 6"
   workflow_dispatch: # 수동 실행 가능
   repository_dispatch:
     # 웹 폼에서 주보 업로드/저장 시 즉시 생성
