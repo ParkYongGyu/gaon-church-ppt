@@ -44,7 +44,9 @@ KOREAN_RE = re.compile(r"[가-힣ㄱ-ㆎ]")
 
 TEXTBOX_HEIGHT_EMU = 4526876
 TEXTBOX_WIDTH_PT = 697.0
-CHARS_PER_LINE = 38
+# 한 줄에 들어가는 폭(한글 전각 기준 단위). 공백/숫자/문장부호는 절반 폭으로 계산.
+KO_WIDTH_PER_LINE = 36.0
+ASCII_WIDTH_RATIO = 0.55
 TITLE_HEIGHT_PT = 40.0
 BODY_LINE_HEIGHT_PT = 34.8
 SPACER_HEIGHT_PT = 25.0
@@ -153,9 +155,16 @@ def _verse_lines(ref: str, body: str):
     return lines
 
 
+def _effective_width(text: str) -> float:
+    """렌더링 폭 추정 (한글 전각 = 1.0, 공백/숫자/영문/문장부호 = 절반 폭)."""
+    return sum(
+        1.0 if KOREAN_RE.match(ch) else ASCII_WIDTH_RATIO for ch in text
+    )
+
+
 def _verse_height_pt(line: str) -> float:
     """절 한 줄(문단)이 차지할 예상 높이(pt)."""
-    wrapped = max(1, math.ceil(len(line) / CHARS_PER_LINE))
+    wrapped = max(1, math.ceil(_effective_width(line) / KO_WIDTH_PER_LINE))
     return wrapped * BODY_LINE_HEIGHT_PT
 
 
