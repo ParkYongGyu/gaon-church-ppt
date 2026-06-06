@@ -48,6 +48,8 @@ CHARS_PER_LINE = 38
 TITLE_HEIGHT_PT = 40.0
 BODY_LINE_HEIGHT_PT = 34.8
 SPACER_HEIGHT_PT = 25.0
+# 프로젝터에서 하단이 잘려 보이지 않는 영역 보호: 본문 1줄 일찍 페이지를 넘긴다
+PROJECTOR_SAFE_LINES = 1
 
 
 # --- 한글/영문 경계 분할 -----------------------------------------------------
@@ -141,40 +143,68 @@ def parse_scripture_blocks(input_path: Path):
 # --- 높이 추정 ----------------------------------------------------------------
 
 
-def estimate_block_height_pt(ref: str, body: str) -> float:
-    """성경 본문 한 블록이 차지할 예상 높이(pt)."""
-    height = TITLE_HEIGHT_PT
-    full_body = " ".join(body.split("\n"))
-    char_count = len(full_body)
-    wrapped_lines = max(1, math.ceil(char_count / CHARS_PER_LINE))
-    height += wrapped_lines * BODY_LINE_HEIGHT_PT
-    return height
+def _verse_lines(ref: str, body: str):
+    """본문을 절 단위 라인으로 분할. 절 번호가 없는 단일 절은 ref에서 유추해 붙인다."""
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    if len(lines) == 1 and not re.match(r"^\d+", lines[0]):
+        m = re.search(r":(\d+)", ref)
+        if m:
+            lines[0] = f"{m.group(1)} {lines[0]}"
+    return lines
+
+
+def _verse_height_pt(line: str) -> float:
+    """절 한 줄(문단)이 차지할 예상 높이(pt)."""
+    wrapped = max(1, math.ceil(len(line) / CHARS_PER_LINE))
+    return wrapped * BODY_LINE_HEIGHT_PT
 
 
 def split_blocks_into_pages(blocks):
     """본문 블록들을 페이지별로 분배.
+    - 절마다 새 문단이므로 절 단위로 높이를 계산한다.
+    - 한 블록이 페이지를 넘으면 절 경계에서 잘라 다음 페이지로 넘기고
+      이어지는 페이지의 제목에는 "(계속)"을 붙인다.
+    - 프로젝터 하단 잘림 보호를 위해 PROJECTOR_SAFE_LINES 줄만큼 일찍 넘긴다.
     Returns: [[(ref, body), ...], [(ref, body), ...], ...]
     """
-    max_height_pt = TEXTBOX_HEIGHT_EMU / 12700.0
+    max_height_pt = (
+        TEXTBOX_HEIGHT_EMU / 12700.0 - PROJECTOR_SAFE_LINES * BODY_LINE_HEIGHT_PT
+    )
     pages = []
-    current_page = []
-    current_height = 0.0
+    page = []  # [(title, [verses])]
+    height = 0.0
 
-    for i, (ref, body) in enumerate(blocks):
-        block_h = estimate_block_height_pt(ref, body)
-        spacer = SPACER_HEIGHT_PT if current_page else 0.0
+    def close_page():
+        nonlocal page, height
+        if page:
+            pages.append([(title, "\n".join(vs)) for title, vs in page])
+            page = []
+            height = 0.0
 
-        if current_page and current_height + spacer + block_h > max_height_pt:
-            pages.append(current_page)
-            current_page = [(ref, body)]
-            current_height = block_h
-        else:
-            current_height += spacer + block_h
-            current_page.append((ref, body))
+    for ref, body in blocks:
+        verses = _verse_lines(ref, body)
+        continued = False
+        i = 0
+        while i < len(verses):
+            spacer = SPACER_HEIGHT_PT if page else 0.0
+            title = f"{ref} (계속)" if continued else ref
+            block_h = spacer + TITLE_HEIGHT_PT
+            taken = []
+            while i < len(verses):
+                vh = _verse_height_pt(verses[i])
+                if height + block_h + vh > max_height_pt and (taken or page):
+                    break
+                block_h += vh
+                taken.append(verses[i])
+                i += 1
+            if taken:
+                page.append((title, taken))
+                height += block_h
+                continued = True
+            if i < len(verses):
+                close_page()
 
-    if current_page:
-        pages.append(current_page)
-
+    close_page()
     return pages
 
 
@@ -261,14 +291,16 @@ def _split_lang(text: str):
 
 
 def _build_txbody_paragraphs(blocks):
-    """성경 본문 블록 리스트 → <a:p> 엘리먼트 리스트."""
+    """성경 본문 블록 리스트 → <a:p> 엘리먼트 리스트.
+    절마다 새 문단을 만들어 절 번호가 항상 줄 머리에 보이게 한다."""
     paragraphs = []
     for i, (ref, body) in enumerate(blocks):
         if i > 0:
             paragraphs.append(_make_spacer_paragraph())
         paragraphs.append(_make_title_paragraph(ref))
-        full_body = " ".join(body.split("\n"))
-        paragraphs.append(_make_body_paragraph(full_body))
+        for verse in body.split("\n"):
+            if verse.strip():
+                paragraphs.append(_make_body_paragraph(verse.strip()))
     return paragraphs
 
 
