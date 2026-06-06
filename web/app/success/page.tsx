@@ -1,12 +1,21 @@
 import Link from "next/link";
 
-export default function Success() {
+export default async function Success({
+  searchParams,
+}: {
+  searchParams: Promise<{ generated?: string }>;
+}) {
+  const { generated } = await searchParams;
+  const immediate = generated === "1";
+
   return (
     <main className="mx-auto max-w-lg px-4 py-16 text-center">
       <div className="mb-6 text-5xl">&#10003;</div>
       <h1 className="text-xl font-bold text-stone-800">저장 완료</h1>
       <p className="mt-2 text-stone-500">
-        토요일 저녁 8시에 슬라이드가 자동 생성됩니다.
+        {immediate
+          ? "슬라이드 생성이 시작되었습니다. 약 1~2분 후 Drive 업로드와 메일 발송이 완료됩니다."
+          : "토요일 저녁 8시에 슬라이드가 자동 생성됩니다."}
       </p>
       <Link
         href="/"

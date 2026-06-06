@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { NextRequest, NextResponse } from "next/server";
+import { dispatchGeneratePpt } from "@/lib/github";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "",
@@ -53,6 +54,7 @@ export async function POST(req: NextRequest) {
       recipients,
       sermonPptxBase64,
       sermonPptxName,
+      generate,
     } = body;
 
     if (!date || !prayer || !sermonTitle || !scriptureRef || !scriptureBody) {
@@ -84,6 +86,12 @@ export async function POST(req: NextRequest) {
     }
 
     await Promise.all(saves);
+
+    // 저장 직후 GitHub Actions로 PPT 생성·업로드·메일 발송 트리거
+    if (generate) {
+      const result = await dispatchGeneratePpt(date);
+      return NextResponse.json({ ok: true, ...result });
+    }
 
     return NextResponse.json({ ok: true });
   } catch {

@@ -23,6 +23,7 @@ from pathlib import Path
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -67,9 +68,15 @@ def _get_oauth_creds():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
 
     if not creds or not creds.valid:
+        refreshed = False
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+                refreshed = True
+            except RefreshError as e:
+                print(f"토큰 갱신 실패({e.args[0]}) — 브라우저 재인증을 진행합니다.")
+
+        if not refreshed:
             if not CREDS_PATH.exists():
                 sys.exit(
                     "인증 정보가 없습니다.\n"

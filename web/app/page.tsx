@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 function getNextSunday(): string {
@@ -33,8 +33,18 @@ export default function Home() {
   const [recipients, setRecipients] = useState("gikimiad@gmail.com");
   const [sermonFile, setSermonFile] = useState<File | null>(null);
   const [sermonFileName, setSermonFileName] = useState("");
+  const [generate, setGenerate] = useState(true);
+  const [hwpParsing, setHwpParsing] = useState(false);
+  const [hwpMessage, setHwpMessage] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const skipLoadRef = useRef(false);
 
   const loadByDate = useCallback(async (d: string) => {
+    if (skipLoadRef.current) {
+      skipLoadRef.current = false;
+      return;
+    }
     if (!d.match(/^\d{4}-\d{1,2}-\d{1,2}$/)) return;
 
     setLoading(true);
@@ -66,6 +76,38 @@ export default function Home() {
     setDate(newDate);
   }
 
+  async function handleHwpUpload(file: File) {
+    setHwpParsing(true);
+    setHwpMessage("");
+    setError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/bulletin", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "주보 파싱 실패");
+      }
+      const f = data.fields;
+      // 날짜 변경에 따른 기존 데이터 자동 로드가 파싱 결과를 덮어쓰지 않도록
+      if (f.date !== date) skipLoadRef.current = true;
+      setDate(f.date);
+      setPrayer(f.prayer);
+      setSermonTitle(f.sermonTitle);
+      setPreacher(f.preacher);
+      setScriptureRef(f.scriptureRef);
+      setScriptureBody(f.scriptureBody);
+      setHwpMessage(
+        `✓ 주보에서 ${f.date} 예배 정보를 불러왔습니다. 내용 확인 후 저장하세요.`
+      );
+    } catch (err: unknown) {
+      setHwpMessage("");
+      setError(err instanceof Error ? err.message : "주보 파싱 실패");
+    } finally {
+      setHwpParsing(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -95,6 +137,7 @@ export default function Home() {
           recipients,
           sermonPptxBase64,
           sermonPptxName,
+          generate,
         }),
       });
 
@@ -110,7 +153,14 @@ export default function Home() {
         throw new Error(msg);
       }
 
-      router.push("/success");
+      const result = await res.json();
+      if (generate && result.dispatched) {
+        router.push("/success?generated=1");
+      } else if (generate && result.error) {
+        setNotice(`저장은 완료되었지만 즉시 생성 트리거 실패: ${result.error}`);
+      } else {
+        router.push("/success");
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "알 수 없는 오류");
     } finally {
@@ -128,6 +178,33 @@ export default function Home() {
           슬라이드 생성을 위한 예배 정보 입력
         </p>
       </header>
+
+      <div className="mb-6 rounded-xl border border-stone-300 bg-stone-50 p-4">
+        <Field label="주보 한글파일로 자동 입력 (.hwp)">
+          <input
+            type="file"
+            accept=".hwp"
+            disabled={hwpParsing}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleHwpUpload(f);
+              e.target.value = "";
+            }}
+            className={inputClass}
+          />
+          <p className="mt-1 text-xs text-stone-400">
+            주보를 업로드하면 아래 항목이 자동으로 채워집니다
+          </p>
+        </Field>
+        {hwpParsing && (
+          <p className="mt-2 text-sm text-stone-500">주보 분석 중...</p>
+        )}
+        {hwpMessage && (
+          <p className="mt-2 rounded-md bg-green-50 p-2 text-sm text-green-700">
+            {hwpMessage}
+          </p>
+        )}
+      </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <Field label="날짜" required>
@@ -245,9 +322,26 @@ export default function Home() {
           </p>
         </Field>
 
+        <label className="flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+          <input
+            type="checkbox"
+            checked={generate}
+            onChange={(e) => setGenerate(e.target.checked)}
+            className="h-4 w-4 accent-stone-800"
+          />
+          <span className="text-sm text-stone-700">
+            저장 후 바로 PPT 생성 · Drive 업로드 · 메일 발송
+          </span>
+        </label>
+
         {error && (
           <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">
             {error}
+          </p>
+        )}
+        {notice && (
+          <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-700">
+            {notice}
           </p>
         )}
 
@@ -256,7 +350,11 @@ export default function Home() {
           disabled={submitting}
           className="w-full rounded-lg bg-stone-800 px-4 py-3 font-medium text-white transition hover:bg-stone-700 disabled:opacity-50"
         >
-          {submitting ? "저장 중..." : "저장"}
+          {submitting
+            ? "저장 중..."
+            : generate
+              ? "저장하고 바로 생성"
+              : "저장"}
         </button>
       </form>
     </main>

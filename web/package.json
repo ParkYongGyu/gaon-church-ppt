@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",
+    "cfb": "^1.2.2",
     "next": "^15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

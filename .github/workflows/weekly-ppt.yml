@@ -5,6 +5,9 @@ on:
     # 매주 토요일 11:00 UTC = 토요일 20:00 KST
     - cron: "0 11 * * 6"
   workflow_dispatch: # 수동 실행 가능
+  repository_dispatch:
+    # 웹 폼에서 주보 업로드/저장 시 즉시 생성
+    types: [generate-ppt]
 
 jobs:
   generate-and-upload:
@@ -22,7 +25,8 @@ jobs:
         run: pip install lxml google-auth google-auth-oauthlib google-api-python-client
 
       - name: Fetch worship data
-        run: python3 scripts/fetch_worship.py
+        # repository_dispatch면 웹에서 전달한 날짜 사용, 아니면 다가오는 일요일
+        run: python3 scripts/fetch_worship.py ${{ github.event.client_payload.date }}
 
       - name: Generate PPT
         run: python3 scripts/generate_ppt.py
