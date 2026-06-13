@@ -36,6 +36,8 @@ export default function Home() {
   const [generate, setGenerate] = useState(true);
   const [hwpParsing, setHwpParsing] = useState(false);
   const [hwpMessage, setHwpMessage] = useState("");
+  const [hwpWarnings, setHwpWarnings] = useState<string[]>([]);
+  const [hwpError, setHwpError] = useState("");
   const [notice, setNotice] = useState("");
 
   const skipLoadRef = useRef(false);
@@ -79,30 +81,37 @@ export default function Home() {
   async function handleHwpUpload(file: File) {
     setHwpParsing(true);
     setHwpMessage("");
+    setHwpWarnings([]);
+    setHwpError("");
     setError("");
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/bulletin", { method: "POST", body: fd });
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        throw new Error(data.error || "주보 파싱 실패");
+        throw new Error(
+          data?.error || `주보 파싱 실패 (HTTP ${res.status})`
+        );
       }
       const f = data.fields;
-      // 날짜 변경에 따른 기존 데이터 자동 로드가 파싱 결과를 덮어쓰지 않도록
-      if (f.date !== date) skipLoadRef.current = true;
-      setDate(f.date);
-      setPrayer(f.prayer);
-      setSermonTitle(f.sermonTitle);
-      setPreacher(f.preacher);
-      setScriptureRef(f.scriptureRef);
-      setScriptureBody(f.scriptureBody);
+      // 추출에 성공한(비어있지 않은) 필드만 채워, 기존 입력/기본값을 덮어쓰지 않는다.
+      if (f.date) {
+        if (f.date !== date) skipLoadRef.current = true;
+        setDate(f.date);
+      }
+      if (f.prayer) setPrayer(f.prayer);
+      if (f.sermonTitle) setSermonTitle(f.sermonTitle);
+      if (f.preacher) setPreacher(f.preacher);
+      if (f.scriptureRef) setScriptureRef(f.scriptureRef);
+      if (f.scriptureBody) setScriptureBody(f.scriptureBody);
+      setHwpWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       setHwpMessage(
-        `✓ 주보에서 ${f.date} 예배 정보를 불러왔습니다. 내용 확인 후 저장하세요.`
+        `✓ 주보에서 ${f.date || "예배"} 정보를 불러왔습니다. 내용 확인 후 저장하세요.`
       );
     } catch (err: unknown) {
       setHwpMessage("");
-      setError(err instanceof Error ? err.message : "주보 파싱 실패");
+      setHwpError(err instanceof Error ? err.message : "주보 파싱 실패");
     } finally {
       setHwpParsing(false);
     }
@@ -202,6 +211,18 @@ export default function Home() {
         {hwpMessage && (
           <p className="mt-2 rounded-md bg-green-50 p-2 text-sm text-green-700">
             {hwpMessage}
+          </p>
+        )}
+        {hwpWarnings.length > 0 && (
+          <ul className="mt-2 space-y-1 rounded-md bg-amber-50 p-2 text-sm text-amber-700">
+            {hwpWarnings.map((w, i) => (
+              <li key={i}>⚠ {w}</li>
+            ))}
+          </ul>
+        )}
+        {hwpError && (
+          <p className="mt-2 rounded-md bg-red-50 p-2 text-sm text-red-700">
+            {hwpError}
           </p>
         )}
       </div>

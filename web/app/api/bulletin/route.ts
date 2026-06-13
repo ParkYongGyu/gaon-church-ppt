@@ -36,9 +36,9 @@ export async function POST(req: NextRequest) {
     );
 
     const text = extractHwpText(buf);
-    const fields = parseBulletin(text, today);
+    const { fields, warnings } = parseBulletin(text, today);
 
-    return NextResponse.json({ ok: true, fields });
+    return NextResponse.json({ ok: true, fields, warnings });
   } catch (err: unknown) {
     const msg =
       err instanceof Error ? err.message : "주보 파싱 중 오류가 발생했습니다";

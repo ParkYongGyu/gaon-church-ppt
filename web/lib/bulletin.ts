@@ -23,6 +23,13 @@ export interface BulletinFields {
   scriptureBody: string;
 }
 
+export interface BulletinParseResult {
+  /** 추출된 필드. 못 찾은 항목은 빈 문자열로 둔다(폼에서 직접 입력). */
+  fields: BulletinFields;
+  /** 못 찾았거나 직접 확인이 필요한 항목 안내. 화면에 표시한다. */
+  warnings: string[];
+}
+
 function cleanLine(line: string): string {
   // 탭 분할 레이아웃 잔여물 제거 + 공백 정리
   return line.replace(/\t+/g, " ").replace(/\s+/g, " ").trim();
@@ -61,7 +68,10 @@ function normalizeVerseLine(line: string): string {
   return line.replace(/^(\d+)\.\s*/, "$1 ");
 }
 
-export function parseBulletin(text: string, today: Date): BulletinFields {
+export function parseBulletin(
+  text: string,
+  today: Date
+): BulletinParseResult {
   const rawLines = text.split("\n");
   const lines = rawLines.map(cleanLine);
 
@@ -114,13 +124,15 @@ export function parseBulletin(text: string, today: Date): BulletinFields {
     }
   }
 
+  // 못 찾은 항목은 막지 않고 경고로 안내한다(나머지 필드는 정상 채움).
+  const warnings: string[] = [];
   const missing: string[] = [];
   if (!dateStr) missing.push("날짜");
   if (!prayer) missing.push("대표기도");
   if (!sermonTitle) missing.push("설교제목");
   if (!scriptureRef) missing.push("성경본문");
   if (missing.length) {
-    throw new Error(`주보에서 찾지 못한 항목: ${missing.join(", ")}`);
+    warnings.push(`주보에서 찾지 못한 항목: ${missing.join(", ")} (직접 입력해 주세요)`);
   }
 
   // ---- 성경 본문 전문 추출 ----
@@ -161,18 +173,22 @@ export function parseBulletin(text: string, today: Date): BulletinFields {
     }
   }
 
-  if (sections.length === 0) {
-    throw new Error(
-      "주보에서 성경 본문 전문을 찾지 못했습니다. 폼에 직접 입력해 주세요."
+  if (sections.length === 0 && scriptureRef) {
+    warnings.push(
+      "성경 본문 전문을 찾지 못했습니다. 본문 전문은 직접 입력해 주세요."
     );
   }
 
   return {
-    date: dateStr,
-    prayer,
-    sermonTitle,
-    preacher: preacher || "이봉연 목사",
-    scriptureRef: refs.join(", "),
-    scriptureBody: sections.join("\n\n"),
+    fields: {
+      date: dateStr,
+      prayer,
+      sermonTitle,
+      preacher: preacher || "이봉연 목사",
+      // 구분자가 있으면 콤마로 정규화, 없으면 원본 약칭을 그대로 둔다.
+      scriptureRef: refs.join(", ") || scriptureRef,
+      scriptureBody: sections.join("\n\n"),
+    },
+    warnings,
   };
 }
