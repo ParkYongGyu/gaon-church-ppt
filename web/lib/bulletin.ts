@@ -126,8 +126,9 @@ export function parseBulletin(text: string, today: Date): BulletinFields {
   // ---- 성경 본문 전문 추출 ----
   // 약칭 목록 각각에 대해, 헤더 라인("성경본문 : ...") 이후에 다시 등장하는
   // 지점을 찾고 그 다음 절 텍스트를 수집한다.
+  // 약칭 구분자는 주보에 따라 콤마(,) 또는 파이프(|)가 쓰인다.
   const refs = scriptureRef
-    .split(",")
+    .split(/[,|]/)
     .map((r) => r.trim())
     .filter(Boolean);
 
@@ -171,7 +172,7 @@ export function parseBulletin(text: string, today: Date): BulletinFields {
     prayer,
     sermonTitle,
     preacher: preacher || "이봉연 목사",
-    scriptureRef,
+    scriptureRef: refs.join(", "),
     scriptureBody: sections.join("\n\n"),
   };
 }
