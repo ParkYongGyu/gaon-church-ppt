@@ -20,6 +20,7 @@ from scripts.update_slides import (
     A,
     P,
     build_slide12,
+    insert_pptx_verbatim,
     insert_sermon_slides,
     pack,
     split_by_language,
@@ -137,6 +138,12 @@ def main():
         if auto_sermon.exists():
             sermon_pptx = auto_sermon
 
+    # 이봉연 담임목사 설교 PPT (원본 형식 그대로 삽입)
+    pastor_pptx = None
+    auto_pastor = PROJECT_ROOT / "input" / "pastor_sermon.pptx"
+    if auto_pastor.exists():
+        pastor_pptx = auto_pastor
+
     data = parse_input(input_path)
     date_str = data.get("날짜", "")
     prayer = data.get("대표기도", "")
@@ -153,6 +160,8 @@ def main():
     print(f"대표기도: {prayer}")
     print(f"설교제목: {sermon_title}")
     print(f"성경본문: {scripture_ref}")
+    if pastor_pptx:
+        print(f"담임목사 설교 PPT: {pastor_pptx.name}")
     if sermon_pptx:
         print(f"설교 PPT: {sermon_pptx.name}")
     print()
@@ -169,6 +178,10 @@ def main():
 
         print("Slide 12: 성경 본문 생성")
         build_slide12(work, input_path)
+
+        if pastor_pptx:
+            print("\n담임목사 설교 PPT 원본 삽입:")
+            insert_pptx_verbatim(work, pastor_pptx)
 
         if sermon_pptx:
             print("\n설교 슬라이드 삽입:")

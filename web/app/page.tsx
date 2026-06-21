@@ -35,6 +35,8 @@ export default function Home() {
   );
   const [sermonFile, setSermonFile] = useState<File | null>(null);
   const [sermonFileName, setSermonFileName] = useState("");
+  const [pastorFile, setPastorFile] = useState<File | null>(null);
+  const [pastorFileName, setPastorFileName] = useState("");
   const [generate, setGenerate] = useState(true);
   const [hwpParsing, setHwpParsing] = useState(false);
   const [hwpMessage, setHwpMessage] = useState("");
@@ -67,6 +69,7 @@ export default function Home() {
         data.recipients || "gikimiad@gmail.com, leebongt@gmail.com"
       );
       setSermonFileName(data.sermonPptxName || "");
+      setPastorFileName(data.pastorPptxName || "");
     } catch {
       /* 무시 */
     } finally {
@@ -127,14 +130,25 @@ export default function Home() {
     setError("");
 
     try {
+      const encodeFile = async (f: File) => {
+        const buf = await f.arrayBuffer();
+        return btoa(
+          new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), "")
+        );
+      };
+
       let sermonPptxBase64 = "";
       let sermonPptxName = "";
       if (sermonFile) {
-        const buf = await sermonFile.arrayBuffer();
-        sermonPptxBase64 = btoa(
-          new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), "")
-        );
+        sermonPptxBase64 = await encodeFile(sermonFile);
         sermonPptxName = sermonFile.name;
+      }
+
+      let pastorPptxBase64 = "";
+      let pastorPptxName = "";
+      if (pastorFile) {
+        pastorPptxBase64 = await encodeFile(pastorFile);
+        pastorPptxName = pastorFile.name;
       }
 
       const res = await fetch("/api/worship", {
@@ -150,6 +164,8 @@ export default function Home() {
           recipients,
           sermonPptxBase64,
           sermonPptxName,
+          pastorPptxBase64,
+          pastorPptxName,
           generate,
         }),
       });
@@ -323,6 +339,28 @@ export default function Home() {
           />
           <p className="mt-1 text-xs text-stone-400">
             콤마(,)로 구분하여 여러 명에게 발송 가능
+          </p>
+        </Field>
+
+        <Field label="이봉연 담임목사 설교PPT (선택)">
+          <input
+            type="file"
+            accept=".pptx"
+            onChange={(e) => {
+              const f = e.target.files?.[0] || null;
+              setPastorFile(f);
+              if (f) setPastorFileName(f.name);
+            }}
+            className={inputClass}
+          />
+          {pastorFileName && !pastorFile && (
+            <p className="mt-1 text-xs text-stone-500">
+              기존 업로드: {pastorFileName}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-stone-400">
+            업로드한 PPT의 슬라이드가 원본 형식 그대로 성경 본문 슬라이드
+            바로 뒤에 추가됩니다 (기존 이후 슬라이드는 뒤로 밀림)
           </p>
         </Field>
 

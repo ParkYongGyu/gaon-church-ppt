@@ -23,11 +23,16 @@ interface WorshipData {
   scriptureBody: string;
   recipients: string;
   sermonPptxName: string;
+  pastorPptxName: string;
   updatedAt: string;
 }
 
 function sermonKey(date: string): string {
   return `gaon:sermon:${date}`;
+}
+
+function pastorKey(date: string): string {
+  return `gaon:pastor:${date}`;
 }
 
 export const maxDuration = 60;
@@ -54,6 +59,8 @@ export async function POST(req: NextRequest) {
       recipients,
       sermonPptxBase64,
       sermonPptxName,
+      pastorPptxBase64,
+      pastorPptxName,
       generate,
     } = body;
 
@@ -73,6 +80,7 @@ export async function POST(req: NextRequest) {
       scriptureBody,
       recipients: recipients || "",
       sermonPptxName: sermonPptxName || "",
+      pastorPptxName: pastorPptxName || "",
       updatedAt: new Date().toISOString(),
     };
 
@@ -83,6 +91,10 @@ export async function POST(req: NextRequest) {
 
     if (sermonPptxBase64) {
       saves.push(redis.set(sermonKey(date), sermonPptxBase64));
+    }
+
+    if (pastorPptxBase64) {
+      saves.push(redis.set(pastorKey(date), pastorPptxBase64));
     }
 
     await Promise.all(saves);
@@ -105,8 +117,9 @@ export async function GET(req: NextRequest) {
   if (date) {
     const format = req.nextUrl.searchParams.get("format");
 
-    if (format === "sermon-pptx") {
-      const b64 = await redis.get<string>(sermonKey(date));
+    if (format === "sermon-pptx" || format === "pastor-pptx") {
+      const key = format === "pastor-pptx" ? pastorKey(date) : sermonKey(date);
+      const b64 = await redis.get<string>(key);
       if (!b64) {
         return NextResponse.json(null);
       }
@@ -115,7 +128,7 @@ export async function GET(req: NextRequest) {
         headers: {
           "Content-Type":
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-          "Content-Disposition": `attachment; filename="sermon.pptx"`,
+          "Content-Disposition": `attachment; filename="${format}.pptx"`,
         },
       });
     }

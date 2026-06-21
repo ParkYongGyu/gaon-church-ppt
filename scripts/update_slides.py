@@ -996,6 +996,294 @@ def insert_sermon_slides(work_dir: Path, sermon_pptx_path: Path):
     print(f"설교 슬라이드 {len(slides_data)}장 삽입 완료 (성경본문 뒤)")
 
 
+# --- 설교 PPTX verbatim 삽입 (원본 형식 그대로 보존) ------------------------
+
+SLIDEMASTER_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster"
+)
+
+_VERBATIM_FOLDER_PREFIX = {
+    "ppt/slides": "slide",
+    "ppt/slideLayouts": "slideLayout",
+    "ppt/slideMasters": "slideMaster",
+    "ppt/theme": "theme",
+    "ppt/media": "image",
+    "ppt/embeddings": "oleObject",
+}
+
+
+def _ct_localname(el) -> str:
+    return etree.QName(el).localname
+
+
+def _scripture_block_end_pos(work_dir: Path) -> int:
+    """sldIdLst에서 slide12 + 성경본문 overflow(slide29+) 블록의 마지막 위치(0-indexed)."""
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    pres_rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+    slide12_rid = _find_slide12_rId(work_dir)
+
+    proot = etree.parse(str(pres_path)).getroot()
+    sld_ids = proot.find(f"{{{P}}}sldIdLst").findall(f"{{{P}}}sldId")
+    rid_to_target = {
+        r.get("Id"): r.get("Target", "")
+        for r in etree.parse(str(pres_rels_path))
+        .getroot()
+        .findall(f"{{{REL_NS}}}Relationship")
+    }
+
+    pos12 = 0
+    for idx, s in enumerate(sld_ids):
+        if s.get(f"{{{R}}}id") == slide12_rid:
+            pos12 = idx
+            break
+
+    overflow = 0
+    for i in range(pos12 + 1, len(sld_ids)):
+        tgt = rid_to_target.get(sld_ids[i].get(f"{{{R}}}id"), "")
+        m = re.search(r"slide(\d+)\.xml", tgt)
+        if m and int(m.group(1)) > 28:
+            overflow += 1
+        else:
+            break
+    return pos12 + overflow
+
+
+def insert_pptx_verbatim(work_dir: Path, src_pptx_path: Path) -> int:
+    """설교 PPTX의 모든 슬라이드를 *원본 형식 그대로* 패키지에 병합하여
+    성경 본문 슬라이드(slide12 + overflow) 바로 뒤에 삽입한다.
+
+    OOXML 파트는 관계 ID(r:id)로만 서로를 참조하므로, 각 파트 XML은
+    바이트 그대로 복사하고 .rels의 Target 경로만 새 파트명으로 다시 쓴다.
+    이렇게 하면 폰트/색/이미지/레이아웃이 100% 보존된다.
+    """
+    import posixpath
+
+    with zipfile.ZipFile(src_pptx_path, "r") as z:
+        src = {name: z.read(name) for name in z.namelist()}
+
+    if "ppt/presentation.xml" not in src:
+        print("설교 PPT가 올바른 PPTX가 아닙니다.")
+        return 0
+
+    def norm(base_part, target):
+        return posixpath.normpath(
+            posixpath.join(posixpath.dirname(base_part), target)
+        )
+
+    def rels_for(part):
+        return f"{posixpath.dirname(part)}/_rels/{posixpath.basename(part)}.rels"
+
+    def rel_target(from_part, to_part):
+        return posixpath.relpath(to_part, posixpath.dirname(from_part))
+
+    # 1. 원본 슬라이드 순서 파악
+    pres = etree.fromstring(src["ppt/presentation.xml"])
+    pres_rels = etree.fromstring(src["ppt/_rels/presentation.xml.rels"])
+    rid_to_target = {
+        r.get("Id"): r.get("Target")
+        for r in pres_rels.findall(f"{{{REL_NS}}}Relationship")
+    }
+    slide_order = []
+    sld_lst = pres.find(f"{{{P}}}sldIdLst")
+    if sld_lst is not None:
+        for sld in sld_lst.findall(f"{{{P}}}sldId"):
+            tgt = rid_to_target.get(sld.get(f"{{{R}}}id"))
+            if tgt:
+                slide_order.append(norm("ppt/presentation.xml", tgt))
+    if not slide_order:
+        print("설교 PPT에서 슬라이드를 찾을 수 없습니다.")
+        return 0
+
+    # 2. 슬라이드에서 도달 가능한 모든 파트 수집 (노트 슬라이드는 제외)
+    collected = set()
+
+    def visit(part):
+        if part in collected or part not in src:
+            return
+        collected.add(part)
+        rp = rels_for(part)
+        if rp in src:
+            for rel in etree.fromstring(src[rp]).findall(
+                f"{{{REL_NS}}}Relationship"
+            ):
+                if rel.get("TargetMode") == "External":
+                    continue
+                if (rel.get("Type") or "").endswith("notesSlide"):
+                    continue
+                visit(norm(part, rel.get("Target")))
+
+    for sp in slide_order:
+        visit(sp)
+
+    # 3. 대상 파트명 할당 (기존 번호와 충돌 회피)
+    counters = {}
+
+    def alloc(folder, prefix, ext):
+        key = (folder, prefix, ext)
+        if key not in counters:
+            mx = 0
+            d = work_dir / folder
+            if d.exists():
+                pat = re.compile(rf"{re.escape(prefix)}(\d+){re.escape(ext)}$")
+                for f in d.iterdir():
+                    m = pat.match(f.name)
+                    if m:
+                        mx = max(mx, int(m.group(1)))
+            counters[key] = mx
+        counters[key] += 1
+        return f"{folder}/{prefix}{counters[key]}{ext}"
+
+    mapping = {}
+    for part in sorted(collected):
+        folder = posixpath.dirname(part)
+        ext = posixpath.splitext(part)[1]
+        prefix = _VERBATIM_FOLDER_PREFIX.get(folder)
+        if prefix is None:
+            stem = posixpath.splitext(posixpath.basename(part))[0]
+            prefix = re.sub(r"\d+$", "", stem) or "part"
+        mapping[part] = alloc(folder, prefix, ext)
+
+    # 4. 파트 바이트 복사 + .rels Target 재작성
+    for src_part, dest_part in mapping.items():
+        out = work_dir / dest_part
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(src[src_part])
+
+        rp = rels_for(src_part)
+        if rp not in src:
+            continue
+        rels = etree.fromstring(src[rp])
+        for rel in list(rels.findall(f"{{{REL_NS}}}Relationship")):
+            if (rel.get("Type") or "").endswith("notesSlide"):
+                rels.remove(rel)
+                continue
+            if rel.get("TargetMode") == "External":
+                continue
+            child = norm(src_part, rel.get("Target"))
+            if child in mapping:
+                rel.set("Target", rel_target(dest_part, mapping[child]))
+        dest_rels = work_dir / rels_for(dest_part)
+        dest_rels.parent.mkdir(parents=True, exist_ok=True)
+        dest_rels.write_bytes(
+            etree.tostring(
+                rels, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+        )
+
+    # 5. [Content_Types].xml 갱신
+    src_ct = etree.fromstring(src["[Content_Types].xml"])
+    src_overrides, src_defaults = {}, {}
+    for el in src_ct:
+        ln = _ct_localname(el)
+        if ln == "Override":
+            src_overrides[el.get("PartName")] = el.get("ContentType")
+        elif ln == "Default":
+            src_defaults[el.get("Extension", "").lower()] = el.get("ContentType")
+
+    ct_path = work_dir / "[Content_Types].xml"
+    ct_tree = etree.parse(str(ct_path))
+    ct_root = ct_tree.getroot()
+    have_over = {
+        e.get("PartName") for e in ct_root if _ct_localname(e) == "Override"
+    }
+    have_def = {
+        e.get("Extension", "").lower()
+        for e in ct_root
+        if _ct_localname(e) == "Default"
+    }
+    for src_part, dest_part in mapping.items():
+        src_pn = "/" + src_part
+        dest_pn = "/" + dest_part
+        if src_pn in src_overrides:
+            if dest_pn not in have_over:
+                o = etree.SubElement(ct_root, f"{{{CT_NS}}}Override")
+                o.set("PartName", dest_pn)
+                o.set("ContentType", src_overrides[src_pn])
+                have_over.add(dest_pn)
+        else:
+            ext = posixpath.splitext(dest_part)[1].lstrip(".").lower()
+            if ext and ext not in have_def and ext in src_defaults:
+                d = etree.SubElement(ct_root, f"{{{CT_NS}}}Default")
+                d.set("Extension", ext)
+                d.set("ContentType", src_defaults[ext])
+                have_def.add(ext)
+    ct_tree.write(
+        str(ct_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    # 6. 삽입 위치: slide12 + 성경본문 overflow 블록 뒤
+    insert_after_pos = _scripture_block_end_pos(work_dir)
+
+    # 7. presentation.xml.rels + presentation.xml 갱신
+    pres_path = work_dir / "ppt" / "presentation.xml"
+    pres_rels_path = work_dir / "ppt" / "_rels" / "presentation.xml.rels"
+    prt = etree.parse(str(pres_rels_path))
+    prr = prt.getroot()
+    rid_nums = [
+        int(r.get("Id")[3:])
+        for r in prr.findall(f"{{{REL_NS}}}Relationship")
+        if r.get("Id", "").startswith("rId")
+    ]
+    next_rid_n = (max(rid_nums) + 1) if rid_nums else 1
+
+    pt = etree.parse(str(pres_path))
+    proot = pt.getroot()
+    sld_id_lst = proot.find(f"{{{P}}}sldIdLst")
+    sld_master_lst = proot.find(f"{{{P}}}sldMasterIdLst")
+
+    def add_rel(rtype, target):
+        nonlocal next_rid_n
+        rid = f"rId{next_rid_n}"
+        next_rid_n += 1
+        rel = etree.SubElement(prr, f"{{{REL_NS}}}Relationship")
+        rel.set("Id", rid)
+        rel.set("Type", rtype)
+        rel.set("Target", target)
+        return rid
+
+    # 7a. 가져온 슬라이드 마스터를 presentation에 등록
+    if sld_master_lst is not None:
+        mids = [
+            int(m.get("id"))
+            for m in sld_master_lst.findall(f"{{{P}}}sldMasterId")
+        ]
+        next_mid = (max(mids) + 1) if mids else 2147483648
+        for src_part, dest_part in mapping.items():
+            if (
+                posixpath.dirname(src_part) == "ppt/slideMasters"
+                and dest_part.endswith(".xml")
+            ):
+                rid = add_rel(SLIDEMASTER_TYPE, dest_part[len("ppt/"):])
+                e = etree.SubElement(sld_master_lst, f"{{{P}}}sldMasterId")
+                e.set("id", str(next_mid))
+                e.set(f"{{{R}}}id", rid)
+                next_mid += 1
+
+    # 7b. 슬라이드를 원본 순서대로 삽입
+    all_ids = [int(s.get("id")) for s in sld_id_lst.findall(f"{{{P}}}sldId")]
+    next_sid = (max(all_ids) + 1) if all_ids else 256
+    for i, src_slide in enumerate(slide_order):
+        dest_slide = mapping[src_slide]
+        rid = add_rel(SLIDE_TYPE, dest_slide[len("ppt/"):])
+        e = etree.Element(f"{{{P}}}sldId")
+        e.set("id", str(next_sid))
+        next_sid += 1
+        e.set(f"{{{R}}}id", rid)
+        sld_id_lst.insert(insert_after_pos + 1 + i, e)
+
+    prt.write(
+        str(pres_rels_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    pt.write(
+        str(pres_path), xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    print(
+        f"설교 PPT {len(slide_order)}장을 원본 형식 그대로 삽입 완료 (성경본문 뒤)"
+    )
+    return len(slide_order)
+
+
 # --- PPTX 패킹/언패킹 -------------------------------------------------------
 
 def unpack(pptx_path: Path, work_dir: Path):
