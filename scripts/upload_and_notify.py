@@ -42,7 +42,7 @@ DRIVE_FOLDER_NAME = "가온교회 주일예배"
 DRIVE_FOLDER_ID = os.environ.get(
     "GAON_DRIVE_FOLDER_ID", "1UpMqB6gIFZqBmxGfQRQBJSibAmUn0FlV"
 )
-DEFAULT_RECIPIENT = "gikimiad@gmail.com"
+DEFAULT_RECIPIENTS = ["gikimiad@gmail.com", "leebongt@gmail.com"]
 PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -190,18 +190,18 @@ def upload_to_drive(service, file_path: Path) -> str:
 def parse_recipients_from_input() -> list[str]:
     input_path = PROJECT_ROOT / "input" / "next_sunday.txt"
     if not input_path.exists():
-        return [DEFAULT_RECIPIENT]
+        return list(DEFAULT_RECIPIENTS)
     for line in input_path.read_text(encoding="utf-8").splitlines():
         if line.startswith("수신자") and ":" in line:
             raw = line.split(":", 1)[1].strip()
             if raw:
                 return [r.strip() for r in raw.split(",") if r.strip()]
-    return [DEFAULT_RECIPIENT]
+    return list(DEFAULT_RECIPIENTS)
 
 
 def send_email(link: str, filename: str, recipients: list[str] | None = None):
     if not recipients:
-        recipients = [DEFAULT_RECIPIENT]
+        recipients = list(DEFAULT_RECIPIENTS)
 
     sender = os.environ.get("GMAIL_SENDER", "")
     password = os.environ.get("GMAIL_APP_PASSWORD", "")

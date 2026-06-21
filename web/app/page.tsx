@@ -30,7 +30,9 @@ export default function Home() {
   const [preacher, setPreacher] = useState("이봉연 목사");
   const [scriptureRef, setScriptureRef] = useState("");
   const [scriptureBody, setScriptureBody] = useState("");
-  const [recipients, setRecipients] = useState("gikimiad@gmail.com");
+  const [recipients, setRecipients] = useState(
+    "gikimiad@gmail.com, leebongt@gmail.com"
+  );
   const [sermonFile, setSermonFile] = useState<File | null>(null);
   const [sermonFileName, setSermonFileName] = useState("");
   const [generate, setGenerate] = useState(true);
@@ -61,7 +63,9 @@ export default function Home() {
       setPreacher(data.preacher || "이봉연 목사");
       setScriptureRef(data.scriptureRef || "");
       setScriptureBody(data.scriptureBody || "");
-      setRecipients(data.recipients || "gikimiad@gmail.com");
+      setRecipients(
+        data.recipients || "gikimiad@gmail.com, leebongt@gmail.com"
+      );
       setSermonFileName(data.sermonPptxName || "");
     } catch {
       /* 무시 */
