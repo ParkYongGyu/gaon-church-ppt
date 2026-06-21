@@ -625,40 +625,46 @@ def extract_sermon_text(sermon_pptx_path: Path):
             root = tree.getroot()
             title = ""
             body_paragraphs = []
+            # placeholder가 없는 PPT(일반 텍스트 상자만 사용)를 위한 폴백용
+            all_paras = []
+
+            def _para_text(p):
+                parts = []
+                for r in p.findall(f"{{{A}}}r"):
+                    t = r.find(f"{{{A}}}t")
+                    if t is not None and t.text:
+                        parts.append(t.text)
+                return "".join(parts)
 
             for sp in root.iter(f"{{{P}}}sp"):
+                txBody = sp.find(f"{{{P}}}txBody")
+                if txBody is None:
+                    continue
+                sp_paras = [_para_text(p) for p in txBody.findall(f"{{{A}}}p")]
+                all_paras.extend(t for t in sp_paras if t.strip())
+
+                ph = None
                 nvSpPr = sp.find(f"{{{P}}}nvSpPr")
-                if nvSpPr is None:
-                    continue
-                nvPr = nvSpPr.find(f"{{{P}}}nvPr")
-                if nvPr is None:
-                    continue
-                ph = nvPr.find(f"{{{P}}}ph")
+                if nvSpPr is not None:
+                    nvPr = nvSpPr.find(f"{{{P}}}nvPr")
+                    if nvPr is not None:
+                        ph = nvPr.find(f"{{{P}}}ph")
                 if ph is None:
                     continue
 
                 ph_type = ph.get("type", "")
                 ph_idx = ph.get("idx", "")
-                txBody = sp.find(f"{{{P}}}txBody")
-                if txBody is None:
-                    continue
-
                 if ph_type == "title":
-                    texts = []
-                    for p in txBody.findall(f"{{{A}}}p"):
-                        for r in p.findall(f"{{{A}}}r"):
-                            t = r.find(f"{{{A}}}t")
-                            if t is not None and t.text:
-                                texts.append(t.text)
-                    title = "".join(texts).strip()
+                    title = "".join(sp_paras).strip()
                 elif ph_idx == "1" or ph_type == "body":
-                    for p in txBody.findall(f"{{{A}}}p"):
-                        ptexts = []
-                        for r in p.findall(f"{{{A}}}r"):
-                            t = r.find(f"{{{A}}}t")
-                            if t is not None and t.text:
-                                ptexts.append(t.text)
-                        body_paragraphs.append("".join(ptexts))
+                    body_paragraphs.extend(sp_paras)
+
+            # placeholder에서 아무 텍스트도 못 찾으면 일반 텍스트 상자에서 추출:
+            # 첫 문단을 제목, 나머지를 본문으로 사용.
+            if not title and not any(b.strip() for b in body_paragraphs):
+                if all_paras:
+                    title = all_paras[0]
+                    body_paragraphs = all_paras[1:]
 
             slides.append({"title": title, "body": body_paragraphs})
             i += 1
