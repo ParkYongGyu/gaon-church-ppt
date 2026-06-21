@@ -64,17 +64,20 @@ def main():
     print(f"저장 완료 ({target_date}): {OUTPUT_PATH}")
 
     def fetch_pptx(fmt: str, dest_name: str, label: str):
+        # 파일이 있으면 Blob URL로 307 리다이렉트되고, urllib이 자동으로
+        # 따라가 실제 PPTX를 받는다. 없으면 JSON(null)이 온다.
         url = f"{api_url}/api/worship?date={target_date}&format={fmt}"
         path = PROJECT_ROOT / "input" / dest_name
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req) as resp:
-                ct = resp.headers.get("Content-Type", "")
-                if "presentation" in ct:
-                    path.write_bytes(resp.read())
-                    print(f"{label} 저장: {path}")
-                else:
-                    path.unlink(missing_ok=True)
+                content = resp.read()
+            # PPTX는 zip(PK..)로 시작. JSON(null) 등은 무시.
+            if content[:2] == b"PK":
+                path.write_bytes(content)
+                print(f"{label} 저장: {path} ({len(content)} bytes)")
+            else:
+                path.unlink(missing_ok=True)
         except Exception:
             path.unlink(missing_ok=True)
 

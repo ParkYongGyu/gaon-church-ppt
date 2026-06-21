@@ -23,16 +23,10 @@ interface WorshipData {
   scriptureBody: string;
   recipients: string;
   sermonPptxName: string;
+  sermonPptxUrl: string;
   pastorPptxName: string;
+  pastorPptxUrl: string;
   updatedAt: string;
-}
-
-function sermonKey(date: string): string {
-  return `gaon:sermon:${date}`;
-}
-
-function pastorKey(date: string): string {
-  return `gaon:pastor:${date}`;
 }
 
 export const maxDuration = 60;
@@ -57,10 +51,10 @@ export async function POST(req: NextRequest) {
       scriptureRef,
       scriptureBody,
       recipients,
-      sermonPptxBase64,
       sermonPptxName,
-      pastorPptxBase64,
+      sermonPptxUrl,
       pastorPptxName,
+      pastorPptxUrl,
       generate,
     } = body;
 
@@ -80,24 +74,16 @@ export async function POST(req: NextRequest) {
       scriptureBody,
       recipients: recipients || "",
       sermonPptxName: sermonPptxName || "",
+      sermonPptxUrl: sermonPptxUrl || "",
       pastorPptxName: pastorPptxName || "",
+      pastorPptxUrl: pastorPptxUrl || "",
       updatedAt: new Date().toISOString(),
     };
 
-    const saves: Promise<unknown>[] = [
+    await Promise.all([
       redis.set(LATEST_KEY, data),
       redis.set(dateKey(date), data),
-    ];
-
-    if (sermonPptxBase64) {
-      saves.push(redis.set(sermonKey(date), sermonPptxBase64));
-    }
-
-    if (pastorPptxBase64) {
-      saves.push(redis.set(pastorKey(date), pastorPptxBase64));
-    }
-
-    await Promise.all(saves);
+    ]);
 
     // 저장 직후 GitHub Actions로 PPT 생성·업로드·메일 발송 트리거
     if (generate) {
@@ -118,19 +104,14 @@ export async function GET(req: NextRequest) {
     const format = req.nextUrl.searchParams.get("format");
 
     if (format === "sermon-pptx" || format === "pastor-pptx") {
-      const key = format === "pastor-pptx" ? pastorKey(date) : sermonKey(date);
-      const b64 = await redis.get<string>(key);
-      if (!b64) {
+      const d = await redis.get<WorshipData>(dateKey(date));
+      const url =
+        format === "pastor-pptx" ? d?.pastorPptxUrl : d?.sermonPptxUrl;
+      if (!url) {
         return NextResponse.json(null);
       }
-      const binary = Buffer.from(b64, "base64");
-      return new NextResponse(binary, {
-        headers: {
-          "Content-Type":
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-          "Content-Disposition": `attachment; filename="${format}.pptx"`,
-        },
-      });
+      // 파일 자체는 Blob에 있으므로 해당 URL로 리다이렉트한다.
+      return NextResponse.redirect(url, 307);
     }
 
     const data = await redis.get<WorshipData>(dateKey(date));

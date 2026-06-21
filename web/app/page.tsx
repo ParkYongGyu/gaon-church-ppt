@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
 
 function getNextSunday(): string {
   const today = new Date();
@@ -35,8 +36,11 @@ export default function Home() {
   );
   const [sermonFile, setSermonFile] = useState<File | null>(null);
   const [sermonFileName, setSermonFileName] = useState("");
+  const [sermonFileUrl, setSermonFileUrl] = useState("");
   const [pastorFile, setPastorFile] = useState<File | null>(null);
   const [pastorFileName, setPastorFileName] = useState("");
+  const [pastorFileUrl, setPastorFileUrl] = useState("");
+  const [uploadStatus, setUploadStatus] = useState("");
   const [generate, setGenerate] = useState(true);
   const [hwpParsing, setHwpParsing] = useState(false);
   const [hwpMessage, setHwpMessage] = useState("");
@@ -69,7 +73,9 @@ export default function Home() {
         data.recipients || "gikimiad@gmail.com, leebongt@gmail.com"
       );
       setSermonFileName(data.sermonPptxName || "");
+      setSermonFileUrl(data.sermonPptxUrl || "");
       setPastorFileName(data.pastorPptxName || "");
+      setPastorFileUrl(data.pastorPptxUrl || "");
     } catch {
       /* 무시 */
     } finally {
@@ -130,26 +136,31 @@ export default function Home() {
     setError("");
 
     try {
-      const encodeFile = async (f: File) => {
-        const buf = await f.arrayBuffer();
-        return btoa(
-          new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), "")
-        );
+      // 대용량 PPT는 Vercel Blob로 직접 업로드(함수 4.5MB 한도 우회)하고
+      // URL만 저장한다. 새 파일이 없으면 기존 업로드를 그대로 유지한다.
+      const uploadPptx = async (f: File, label: string) => {
+        setUploadStatus(`${label} 업로드 중... (파일이 크면 시간이 걸립니다)`);
+        const blob = await upload(f.name, f, {
+          access: "public",
+          handleUploadUrl: "/api/blob/upload",
+        });
+        return blob.url;
       };
 
-      let sermonPptxBase64 = "";
-      let sermonPptxName = "";
+      let sermonPptxUrl = sermonFileUrl;
+      let sermonPptxName = sermonFileName;
       if (sermonFile) {
-        sermonPptxBase64 = await encodeFile(sermonFile);
+        sermonPptxUrl = await uploadPptx(sermonFile, "추가 설교 PPT");
         sermonPptxName = sermonFile.name;
       }
 
-      let pastorPptxBase64 = "";
-      let pastorPptxName = "";
+      let pastorPptxUrl = pastorFileUrl;
+      let pastorPptxName = pastorFileName;
       if (pastorFile) {
-        pastorPptxBase64 = await encodeFile(pastorFile);
+        pastorPptxUrl = await uploadPptx(pastorFile, "담임목사 설교 PPT");
         pastorPptxName = pastorFile.name;
       }
+      setUploadStatus("");
 
       const res = await fetch("/api/worship", {
         method: "POST",
@@ -162,10 +173,10 @@ export default function Home() {
           scriptureRef,
           scriptureBody,
           recipients,
-          sermonPptxBase64,
           sermonPptxName,
-          pastorPptxBase64,
+          sermonPptxUrl,
           pastorPptxName,
+          pastorPptxUrl,
           generate,
         }),
       });
@@ -193,6 +204,7 @@ export default function Home() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "알 수 없는 오류");
     } finally {
+      setUploadStatus("");
       setSubmitting(false);
     }
   }
@@ -405,6 +417,11 @@ export default function Home() {
         {notice && (
           <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-700">
             {notice}
+          </p>
+        )}
+        {uploadStatus && (
+          <p className="rounded-md bg-blue-50 p-3 text-sm text-blue-700">
+            {uploadStatus}
           </p>
         )}
 
