@@ -1048,6 +1048,70 @@ def _scripture_block_end_pos(work_dir: Path) -> int:
     return pos12 + overflow
 
 
+def _sldsz(pres_root):
+    sz = pres_root.find(f"{{{P}}}sldSz")
+    if sz is None:
+        return None
+    return (int(sz.get("cx")), int(sz.get("cy")))
+
+
+def _wrap_slide_scale(slide_root, src_size, tgt_size):
+    """슬라이드 크기가 다를 때, spTree의 모든 도형을 그룹으로 묶고 그룹 변환
+    (chExt=원본크기 → ext=목표크기)으로 도형·텍스트를 한 번에 비례 축소한다.
+    PowerPoint의 그룹 스케일과 동일한 방식이라 폰트 크기까지 시각적으로 맞춰진다.
+    """
+    src_cx, src_cy = src_size
+    tgt_cx, tgt_cy = tgt_size
+    cSld = slide_root.find(f"{{{P}}}cSld")
+    if cSld is None:
+        return
+    spTree = cSld.find(f"{{{P}}}spTree")
+    if spTree is None:
+        return
+
+    move = [
+        ch
+        for ch in list(spTree)
+        if etree.QName(ch).localname not in ("nvGrpSpPr", "grpSpPr")
+    ]
+    if not move:
+        return
+
+    ids = [
+        int(c.get("id"))
+        for c in slide_root.iter(f"{{{P}}}cNvPr")
+        if (c.get("id") or "").isdigit()
+    ]
+    group_id = (max(ids) + 1) if ids else 1
+
+    grp = etree.Element(f"{{{P}}}grpSp")
+    nv = etree.SubElement(grp, f"{{{P}}}nvGrpSpPr")
+    cnv = etree.SubElement(nv, f"{{{P}}}cNvPr")
+    cnv.set("id", str(group_id))
+    cnv.set("name", "ScaledImport")
+    etree.SubElement(nv, f"{{{P}}}cNvGrpSpPr")
+    etree.SubElement(nv, f"{{{P}}}nvPr")
+    gspPr = etree.SubElement(grp, f"{{{P}}}grpSpPr")
+    xfrm = etree.SubElement(gspPr, f"{{{A}}}xfrm")
+    off = etree.SubElement(xfrm, f"{{{A}}}off")
+    off.set("x", "0")
+    off.set("y", "0")
+    ext = etree.SubElement(xfrm, f"{{{A}}}ext")
+    ext.set("cx", str(tgt_cx))
+    ext.set("cy", str(tgt_cy))
+    chOff = etree.SubElement(xfrm, f"{{{A}}}chOff")
+    chOff.set("x", "0")
+    chOff.set("y", "0")
+    chExt = etree.SubElement(xfrm, f"{{{A}}}chExt")
+    chExt.set("cx", str(src_cx))
+    chExt.set("cy", str(src_cy))
+
+    for ch in move:
+        spTree.remove(ch)
+        grp.append(ch)
+    spTree.append(grp)
+
+
 def insert_pptx_verbatim(work_dir: Path, src_pptx_path: Path) -> int:
     """설교 PPTX의 모든 슬라이드를 *원본 형식 그대로* 패키지에 병합하여
     성경 본문 슬라이드(slide12 + overflow) 바로 뒤에 삽입한다.
@@ -1093,6 +1157,11 @@ def insert_pptx_verbatim(work_dir: Path, src_pptx_path: Path) -> int:
     if not slide_order:
         print("설교 PPT에서 슬라이드를 찾을 수 없습니다.")
         return 0
+
+    # 슬라이드 크기 비교 (다르면 삽입 슬라이드를 비례 축소)
+    src_size = _sldsz(pres)
+    tgt_size = _sldsz(etree.parse(str(work_dir / "ppt" / "presentation.xml")).getroot())
+    scale_needed = bool(src_size and tgt_size and src_size != tgt_size)
 
     # 2. 슬라이드에서 도달 가능한 모든 파트 수집 (노트 슬라이드는 제외)
     collected = set()
@@ -1147,7 +1216,18 @@ def insert_pptx_verbatim(work_dir: Path, src_pptx_path: Path) -> int:
     for src_part, dest_part in mapping.items():
         out = work_dir / dest_part
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(src[src_part])
+
+        # 슬라이드는 크기가 다르면 그룹 변환으로 비례 축소 후 저장
+        if scale_needed and posixpath.dirname(src_part) == "ppt/slides":
+            root = etree.fromstring(src[src_part])
+            _wrap_slide_scale(root, src_size, tgt_size)
+            out.write_bytes(
+                etree.tostring(
+                    root, xml_declaration=True, encoding="UTF-8", standalone=True
+                )
+            )
+        else:
+            out.write_bytes(src[src_part])
 
         rp = rels_for(src_part)
         if rp not in src:
@@ -1242,22 +1322,48 @@ def insert_pptx_verbatim(work_dir: Path, src_pptx_path: Path) -> int:
         return rid
 
     # 7a. 가져온 슬라이드 마스터를 presentation에 등록
+    #     sldMasterId/sldLayoutId의 @id는 문서 전역에서 고유해야 하므로,
+    #     기존 최대값보다 큰 값으로 새로 부여한다 (PowerPoint "복구" 방지).
     if sld_master_lst is not None:
-        mids = [
+        all_ids = [
             int(m.get("id"))
             for m in sld_master_lst.findall(f"{{{P}}}sldMasterId")
         ]
-        next_mid = (max(mids) + 1) if mids else 2147483648
+        for mp in (work_dir / "ppt" / "slideMasters").glob("slideMaster*.xml"):
+            mlay = etree.parse(str(mp)).getroot().find(f"{{{P}}}sldLayoutIdLst")
+            if mlay is not None:
+                all_ids += [
+                    int(l.get("id"))
+                    for l in mlay.findall(f"{{{P}}}sldLayoutId")
+                    if (l.get("id") or "").isdigit()
+                ]
+        gid = max(all_ids) if all_ids else 2147483647
+
         for src_part, dest_part in mapping.items():
             if (
                 posixpath.dirname(src_part) == "ppt/slideMasters"
                 and dest_part.endswith(".xml")
             ):
                 rid = add_rel(SLIDEMASTER_TYPE, dest_part[len("ppt/"):])
+                gid += 1
                 e = etree.SubElement(sld_master_lst, f"{{{P}}}sldMasterId")
-                e.set("id", str(next_mid))
+                e.set("id", str(gid))
                 e.set(f"{{{R}}}id", rid)
-                next_mid += 1
+
+                # 가져온 마스터의 sldLayoutId @id도 전역 고유값으로 재부여
+                mp = work_dir / dest_part
+                mtree = etree.parse(str(mp))
+                mlay = mtree.getroot().find(f"{{{P}}}sldLayoutIdLst")
+                if mlay is not None:
+                    for l in mlay.findall(f"{{{P}}}sldLayoutId"):
+                        gid += 1
+                        l.set("id", str(gid))
+                    mtree.write(
+                        str(mp),
+                        xml_declaration=True,
+                        encoding="UTF-8",
+                        standalone=True,
+                    )
 
     # 7b. 슬라이드를 원본 순서대로 삽입
     all_ids = [int(s.get("id")) for s in sld_id_lst.findall(f"{{{P}}}sldId")]
