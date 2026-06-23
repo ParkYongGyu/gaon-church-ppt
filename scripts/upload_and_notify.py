@@ -42,7 +42,7 @@ DRIVE_FOLDER_NAME = "가온교회 주일예배"
 DRIVE_FOLDER_ID = os.environ.get(
     "GAON_DRIVE_FOLDER_ID", "1UpMqB6gIFZqBmxGfQRQBJSibAmUn0FlV"
 )
-DEFAULT_RECIPIENTS = ["gikimiad@gmail.com", "leebongt@gmail.com"]
+DEFAULT_RECIPIENTS = ["gikimiad@gmail.com", "leebongt@gmail.com", "happysellym@gmail.com"]
 PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )

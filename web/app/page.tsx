@@ -32,7 +32,7 @@ export default function Home() {
   const [scriptureRef, setScriptureRef] = useState("");
   const [scriptureBody, setScriptureBody] = useState("");
   const [recipients, setRecipients] = useState(
-    "gikimiad@gmail.com, leebongt@gmail.com"
+    "gikimiad@gmail.com, leebongt@gmail.com, happysellym@gmail.com"
   );
   const [sermonFile, setSermonFile] = useState<File | null>(null);
   const [sermonFileName, setSermonFileName] = useState("");
@@ -70,7 +70,8 @@ export default function Home() {
       setScriptureRef(data.scriptureRef || "");
       setScriptureBody(data.scriptureBody || "");
       setRecipients(
-        data.recipients || "gikimiad@gmail.com, leebongt@gmail.com"
+        data.recipients ||
+          "gikimiad@gmail.com, leebongt@gmail.com, happysellym@gmail.com"
       );
       setSermonFileName(data.sermonPptxName || "");
       setSermonFileUrl(data.sermonPptxUrl || "");
