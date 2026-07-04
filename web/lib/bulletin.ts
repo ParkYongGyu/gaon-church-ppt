@@ -68,6 +68,15 @@ function normalizeVerseLine(line: string): string {
   return line.replace(/^(\d+)\.\s*/, "$1 ");
 }
 
+/**
+ * 대시 계열 문자(‐ ‑ ‒ – — ― −)를 하이픈으로 통일.
+ * 주보에서 헤더는 en dash(–), 본문 섹션 제목은 하이픈(-)처럼
+ * 같은 구절을 다른 대시로 표기하는 경우가 있어 매칭 전에 정규화한다.
+ */
+function normalizeDashes(s: string): string {
+  return s.replace(/[‐-―−]/g, "-");
+}
+
 export function parseBulletin(
   text: string,
   today: Date
@@ -146,10 +155,10 @@ export function parseBulletin(
 
   const sections: string[] = [];
   for (let r = 0; r < refs.length; r++) {
-    const ref = refs[r];
+    const ref = normalizeDashes(refs[r]);
     let start = -1;
     for (let i = scriptureRefLineIdx + 1; i < lines.length; i++) {
-      if (lines[i].startsWith(ref)) {
+      if (normalizeDashes(lines[i]).startsWith(ref)) {
         start = i;
         break;
       }
@@ -161,7 +170,13 @@ export function parseBulletin(
       const line = lines[i];
       if (!line) continue;
       // 다음 약칭 시작 / 새 섹션(<...>, ★, [...]) 도달 시 종료
-      if (refs.some((other, oi) => oi !== r && line.startsWith(other))) break;
+      if (
+        refs.some(
+          (other, oi) =>
+            oi !== r && normalizeDashes(line).startsWith(normalizeDashes(other))
+        )
+      )
+        break;
       if (/^[<★]/.test(line)) break;
       if (/^\[/.test(line) && !/^\[\d/.test(line)) break;
       // 절 번호로 시작하지 않는 라인이 나오면 본문 종료로 간주
