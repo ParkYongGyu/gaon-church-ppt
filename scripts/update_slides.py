@@ -98,6 +98,64 @@ def split_by_language(text: str):
 # --- 성경 본문 파싱 -----------------------------------------------------------
 
 
+def _default_book_name(lines, body_start):
+    """헤더의 '성경본문 : 책 장:절...' 줄에서 기본 책 이름을 추출."""
+    for line in lines[:body_start]:
+        if line.strip().startswith("성경본문"):
+            _, _, value = line.partition(":")
+            m = re.match(r"\s*([가-힣]+)", value)
+            if m:
+                return m.group(1)
+    return None
+
+
+def _parse_bare_verse_blocks(body_lines, default_book):
+    """책 이름 없이 '장:절 본문' 형식으로만 적힌 본문을 파싱.
+    같은 장에서 절 번호가 연속되면 한 블록으로, 끊기면 새 블록으로 나눈다.
+    """
+    if not default_book:
+        return []
+
+    verse_pattern = re.compile(r"^(\d+):(\d+)\s+(.*)$")
+    parsed = []
+    for line in body_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        m = verse_pattern.match(stripped)
+        if not m:
+            return []  # 형식이 섞여 있으면 이 파서를 적용하지 않음
+        chapter, verse, text = int(m.group(1)), int(m.group(2)), m.group(3)
+        parsed.append((chapter, verse, text))
+
+    if not parsed:
+        return []
+
+    blocks = []
+    cur_chapter, cur_start, cur_end = None, None, None
+    cur_lines = []
+
+    def flush():
+        if cur_lines:
+            if cur_start == cur_end:
+                ref = f"{default_book} {cur_chapter}:{cur_start}"
+            else:
+                ref = f"{default_book} {cur_chapter}:{cur_start}-{cur_end}"
+            blocks.append((ref, "\n".join(cur_lines)))
+
+    for chapter, verse, text in parsed:
+        if cur_chapter == chapter and cur_end is not None and verse == cur_end + 1:
+            cur_end = verse
+            cur_lines.append(f"{verse} {text}")
+        else:
+            flush()
+            cur_chapter, cur_start, cur_end = chapter, verse, verse
+            cur_lines = [f"{verse} {text}"]
+    flush()
+
+    return blocks
+
+
 def parse_scripture_blocks(input_path: Path):
     """input/next_sunday.txt에서 성경 본문 블록들을 파싱.
     Returns: [(ref, body_text), ...]
@@ -138,6 +196,11 @@ def parse_scripture_blocks(input_path: Path):
 
     if current_ref and current_body_lines:
         blocks.append((current_ref, "\n".join(current_body_lines)))
+
+    if not blocks:
+        # 책 이름 없이 '장:절 본문'만 나열된 형식에 대한 폴백
+        default_book = _default_book_name(lines, body_start)
+        blocks = _parse_bare_verse_blocks(body_lines, default_book)
 
     return blocks
 
