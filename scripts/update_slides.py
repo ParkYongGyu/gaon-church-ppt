@@ -112,28 +112,46 @@ def _default_book_name(lines, body_start):
 def _parse_bare_verse_blocks(body_lines, default_book):
     """책 이름 없이 '장:절 본문' 형식으로만 적힌 본문을 파싱.
     같은 장에서 절 번호가 연속되면 한 블록으로, 끊기면 새 블록으로 나눈다.
+
+    두 가지 추가 표기를 지원한다:
+    - '* 소제목' 줄: 성경 구절이 아닌 단락 소제목. 다음 블록의 첫 줄로 포함된다.
+    - '21:20-21 본문' 줄: 한 줄에 절 범위가 이미 포함된 경우, 그 줄만으로
+      독립된 블록을 만든다 (앞뒤 절과 합치지 않음).
     """
     if not default_book:
         return []
 
+    label_pattern = re.compile(r"^\*\s*(.+)$")
+    range_pattern = re.compile(r"^(\d+):(\d+)-(\d+)\s+(.*)$")
     verse_pattern = re.compile(r"^(\d+):(\d+)\s+(.*)$")
-    parsed = []
+
+    # (kind, payload) 리스트로 정규화: ("label", text) | ("range", (ch, s, e, text)) | ("verse", (ch, v, text))
+    items = []
     for line in body_lines:
         stripped = line.strip()
         if not stripped:
             continue
+        m = label_pattern.match(stripped)
+        if m:
+            items.append(("label", m.group(1)))
+            continue
+        m = range_pattern.match(stripped)
+        if m:
+            items.append(("range", (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4))))
+            continue
         m = verse_pattern.match(stripped)
-        if not m:
-            return []  # 형식이 섞여 있으면 이 파서를 적용하지 않음
-        chapter, verse, text = int(m.group(1)), int(m.group(2)), m.group(3)
-        parsed.append((chapter, verse, text))
+        if m:
+            items.append(("verse", (int(m.group(1)), int(m.group(2)), m.group(3))))
+            continue
+        return []  # 알 수 없는 형식이 섞여 있으면 이 파서를 적용하지 않음
 
-    if not parsed:
+    if not any(kind != "label" for kind, _ in items):
         return []
 
     blocks = []
     cur_chapter, cur_start, cur_end = None, None, None
     cur_lines = []
+    pending_label = None
 
     def flush():
         if cur_lines:
@@ -143,14 +161,41 @@ def _parse_bare_verse_blocks(body_lines, default_book):
                 ref = f"{default_book} {cur_chapter}:{cur_start}-{cur_end}"
             blocks.append((ref, "\n".join(cur_lines)))
 
-    for chapter, verse, text in parsed:
-        if cur_chapter == chapter and cur_end is not None and verse == cur_end + 1:
-            cur_end = verse
-            cur_lines.append(f"{verse} {text}")
-        else:
+    def start_block(chapter, start, end, first_line):
+        nonlocal cur_chapter, cur_start, cur_end, cur_lines, pending_label
+        flush()
+        cur_chapter, cur_start, cur_end = chapter, start, end
+        cur_lines = []
+        if pending_label:
+            cur_lines.append(pending_label)
+            pending_label = None
+        cur_lines.append(first_line)
+
+    for kind, payload in items:
+        if kind == "label":
             flush()
-            cur_chapter, cur_start, cur_end = chapter, verse, verse
-            cur_lines = [f"{verse} {text}"]
+            cur_chapter, cur_start, cur_end, cur_lines = None, None, None, []
+            pending_label = payload
+        elif kind == "range":
+            chapter, start, end, text = payload
+            flush()
+            cur_chapter, cur_start, cur_end, cur_lines = None, None, None, []
+            label_lines = [pending_label] if pending_label else []
+            pending_label = None
+            ref = f"{default_book} {chapter}:{start}-{end}"
+            blocks.append((ref, "\n".join(label_lines + [f"{start}-{end} {text}"])))
+        else:  # verse
+            chapter, verse, text = payload
+            if (
+                cur_chapter == chapter
+                and cur_end is not None
+                and verse == cur_end + 1
+                and pending_label is None
+            ):
+                cur_end = verse
+                cur_lines.append(f"{verse} {text}")
+            else:
+                start_block(chapter, verse, verse, f"{verse} {text}")
     flush()
 
     return blocks
